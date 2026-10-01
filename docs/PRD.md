@@ -1,6 +1,6 @@
 # PRD — Notely
 
-**Versão:** 0.3  
+**Versão:** 0.4  
 **Status:** Draft  
 **Produto:** Notely  
 **Componente principal:** Notely Reader
@@ -12,6 +12,8 @@ O Notely será um leitor de documentos voltado para leitura técnica, estudo e c
 O usuário continua sendo o agente principal: lê, decide o que é relevante, destaca, comenta, registra dúvidas e cria relações. O Notely persiste essas ações, preserva sua proveniência, enriquece o material em segundo plano e constrói um grafo de conhecimento navegável.
 
 O objetivo não é substituir a leitura humana. A inteligência do sistema deve acompanhar a leitura e reduzir o trabalho de organizar, reencontrar e relacionar o que foi estudado.
+
+O Notely é **reader-first, não reader-only**. Ele também deve ingerir e indexar os documentos do acervo para que o conteúdo completo possa ser localizado, conectado e usado como contexto. Essa ingestão não significa que todo o conteúdo do documento virou conhecimento do usuário.
 
 ## 2. Problema
 
@@ -58,7 +60,9 @@ O primeiro MVP deve permitir:
 11. gerar embeddings e busca semântica em segundo plano;
 12. projetar conceitos e relações em grafo;
 13. permitir assistência multimodal sobre regiões selecionadas;
-14. manter a base preparada para pesquisa externa sob demanda.
+14. manter a base preparada para pesquisa externa sob demanda;
+15. ingerir o conteúdo integral dos PDFs para indexação e recuperação;
+16. permitir criar mapas mentais autorais conectando documentos, anotações, dúvidas, conceitos e texto livre.
 
 ## 6. Não objetivos do MVP
 
@@ -71,7 +75,10 @@ O MVP não deve:
 - depender de Neo4j;
 - depender do Clarc;
 - enviar o PDF inteiro para um serviço externo por padrão;
-- bloquear a leitura aguardando embeddings, grafo ou IA.
+- bloquear a leitura aguardando embeddings, grafo ou IA;
+- tratar todo conteúdo ingerido como conhecimento confirmado do usuário;
+- gerar automaticamente um "mapa mental do usuário" e apresentá-lo como se fosse autoria humana;
+- transformar o produto em uma experiência centrada em chat com o corpus.
 
 ## 7. Ações de leitura
 
@@ -147,7 +154,62 @@ Uma dúvida pode ser tratada em camadas:
 
 Resultados de web search ou research devem ser persistidos com origem, URL, data de recuperação e ligação à dúvida que originou a pesquisa.
 
-## 12. Grafo de conhecimento
+## 12. Corpus, conhecimento e autoria
+
+O Notely deve separar explicitamente três camadas:
+
+1. **Corpus:** conteúdo existente nos documentos ingeridos.
+2. **Atenção do usuário:** highlights, notas, dúvidas, discordâncias, relações e outras ações de leitura.
+3. **Conhecimento derivado:** conceitos, relações, inferências, respostas e pesquisa externa.
+
+O PDF completo pode ser extraído, segmentado e indexado para busca semântica. Isso torna o acervo pesquisável, mas não promove automaticamente todos os chunks ou conceitos detectados ao grafo como conhecimento do usuário.
+
+Essa separação evita confundir:
+
+- "isso existe no documento";
+- "isso chamou minha atenção";
+- "isso foi escrito por mim";
+- "o modelo inferiu isso".
+
+## 13. Mapas mentais do usuário
+
+O mapa mental é um artefato autoral do usuário e deve ser persistido como entidade de primeira classe.
+
+O usuário decide:
+
+- quais nós entram no mapa;
+- como os nós são organizados;
+- quais relações aparecem;
+- quais documentos, anotações, dúvidas ou conceitos são referenciados;
+- quais títulos e rótulos são usados;
+- a posição visual e os agrupamentos.
+
+Um nó pode apontar para:
+
+- documento;
+- anotação;
+- dúvida;
+- conceito;
+- claim;
+- fonte externa;
+- outro mapa;
+- texto livre criado pelo usuário.
+
+A IA pode sugerir nós, relações ou itens relacionados, mas sugestões não entram automaticamente no mapa. A aceitação deve ser uma ação explícita do usuário.
+
+O **Knowledge Graph** e o **Mind Map** são coisas diferentes:
+
+```text
+Knowledge Graph
+    = rede estrutural e derivada do conhecimento
+
+Mind Map
+    = estrutura autoral criada e organizada pelo usuário
+```
+
+O mapa pode consultar o grafo e o corpus para oferecer sugestões, mas sua estrutura final pertence ao usuário.
+
+## 14. Grafo de conhecimento
 
 O Notely deve projetar conhecimento derivado das anotações.
 
@@ -173,7 +235,7 @@ Exemplos de relações:
 
 O grafo deve ser reconstruível a partir da fonte de verdade.
 
-## 13. Proveniência
+## 15. Proveniência
 
 O sistema deve distinguir, no mínimo:
 
@@ -189,7 +251,7 @@ O sistema deve distinguir, no mínimo:
 
 Nenhuma inferência deve aparecer como se tivesse sido escrita pelo usuário ou declarada diretamente pelo documento.
 
-## 14. Arquitetura de dados
+## 16. Arquitetura de dados
 
 A base será PostgreSQL com extensões complementares:
 
@@ -201,7 +263,7 @@ A base será PostgreSQL com extensões complementares:
 
 AGE e pgvector são representações derivadas. Nenhuma informação importante pode existir apenas neles.
 
-## 15. Processamento assíncrono
+## 17. Processamento assíncrono
 
 A criação de uma anotação deve ser rápida:
 
@@ -225,7 +287,7 @@ workers processam
 
 Falha em IA, AGE, pgvector ou pesquisa não pode causar perda da anotação primária.
 
-## 16. Requisitos não funcionais
+## 18. Requisitos não funcionais
 
 - feedback local de highlight com sensação imediata;
 - persistência fora de IA e processamento pesado;
@@ -236,7 +298,7 @@ Falha em IA, AGE, pgvector ou pesquisa não pode causar perda da anotação prim
 - histórico e proveniência preservados;
 - Reader funcional mesmo sem serviços de IA.
 
-## 17. Critérios de aceitação do primeiro MVP
+## 19. Critérios de aceitação do primeiro MVP
 
 O primeiro MVP é utilizável quando:
 
@@ -251,9 +313,11 @@ O primeiro MVP é utilizável quando:
 - uma região visual pode ser enviada ao provider multimodal;
 - a resposta multimodal preserva proveniência;
 - annotations nativas de PDF podem ser importadas;
-- sidecar/exportação das anotações funciona.
+- sidecar/exportação das anotações funciona;
+- o PDF integral pode ser ingerido e pesquisado sem transformar automaticamente todo o corpus em conhecimento;
+- o usuário consegue criar e persistir um mapa mental manual conectando pelo menos documentos e anotações.
 
-## 18. Roadmap inicial
+## 20. Roadmap inicial
 
 ### Etapa 1 — Vertical slice sem IA
 
@@ -271,16 +335,24 @@ Seleção de região → crop → provider multimodal → resposta contextualiza
 
 Annotations nativas, sidecar e fallback para scan/highlight achatado.
 
-### Etapa 5 — Pesquisa externa
+### Etapa 5 — Ingestão do corpus e mapas mentais
+
+PDF → extração/chunks → pgvector → recuperação semântica.
+
+Usuário → cria mapa → adiciona documentos/anotações/conceitos/texto livre → persiste layout e relações autorais.
+
+### Etapa 6 — Pesquisa externa
 
 Dúvida → busca explícita → fontes persistidas → relação com a dúvida.
 
-### Etapa 6 — Integrações
+### Etapa 7 — Integrações
 
 Adapters opcionais, incluindo integração futura com Clarc.
 
-## 19. Direção do produto
+## 21. Direção do produto
 
 O Notely não deve competir com o usuário pela leitura. Ele deve transformar o ato de ler em memória recuperável.
 
 A leitura continua humana. A organização, conexão, recuperação e assistência podem ser automatizadas.
+
+O acervo pode ser ingerido integralmente, mas o que representa o pensamento do usuário só pode ser criado ou confirmado pelo próprio usuário. Em especial, mapas mentais são autorais e não devem ser confundidos com sínteses ou grafos produzidos por modelos.

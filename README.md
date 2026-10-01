@@ -269,6 +269,12 @@ Responsabilidades principais:
 - `docs/`: PRD, especificação técnica, ADRs e documentação do projeto;
 - `AGENTS.md`: regras operacionais para agentes de desenvolvimento.
 
+## Documentação
+
+- [PRD — requisitos do produto](docs/PRD.md)
+- [SPECTEC — especificação técnica](docs/SPECTEC.md)
+- [AGENTS.md — regras operacionais para agentes](AGENTS.md)
+
 ## Estado do projeto
 
 O Notely está em fase inicial de definição e estruturação.

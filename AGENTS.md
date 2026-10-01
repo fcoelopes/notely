@@ -10,6 +10,10 @@ The user reads and decides what is relevant. The system captures annotations, qu
 
 Do not turn Notely into a system that reads or decides for the user by default. Assistance must support the reading workflow rather than replace it.
 
+Notely is reader-first, not reader-only. Full documents may be ingested and indexed for retrieval, but corpus content must not be treated as user-authored knowledge merely because it was ingested.
+
+Mind maps are authored by the user. AI may suggest nodes or edges, but must not silently insert, reorganize, or represent an AI-generated map as the user's map.
+
 ## 2. Source of truth and architecture
 
 Preserve these responsibilities:
@@ -85,6 +89,9 @@ Prefer the smallest implementation that satisfies the requirement.
 - Keep provenance attached to annotations, claims, relationships and model-generated enrichments.
 - Distinguish user-created information from model-generated inference.
 - Do not treat AI output as authoritative source data.
+- Keep corpus data, user-authored data, derived graph data and AI suggestions distinguishable.
+- Persist mind-map nodes, edges and layout as user-owned domain data in PostgreSQL.
+- Never auto-accept AI suggestions into a user's mind map.
 - Do not use emojis in repository templates, technical documentation, commit messages or generated project text unless explicitly requested.
 
 ## 6. Database changes

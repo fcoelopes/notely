@@ -1,6 +1,6 @@
 # SPECTEC — Notely
 
-**Versão:** 0.4  
+**Versão:** 0.5  
 **Status:** Draft técnico  
 **Escopo:** fundação técnica do Notely Reader, persistência, eventos, grafo, busca semântica, multimodal e processamento assíncrono.
 
@@ -9,6 +9,8 @@
 Construir uma arquitetura em que a interação de leitura permaneça simples e responsiva, enquanto enriquecimentos semânticos, projeções de grafo, embeddings, multimodal e pesquisa externa acontecem fora do caminho crítico.
 
 A fonte de verdade deve ser PostgreSQL. TimescaleDB, Apache AGE e pgvector complementam o mesmo domínio com responsabilidades específicas.
+
+O Notely deve suportar ingestão integral do corpus sem confundir corpus indexado com conhecimento confirmado pelo usuário. Mapas mentais são artefatos autorais persistidos em PostgreSQL, não visualizações automáticas do AGE.
 
 ## 2. Arquitetura de alto nível
 
@@ -81,6 +83,8 @@ Responsabilidades:
 8. IA não participa da transação crítica de persistência da anotação.
 9. Proveniência é obrigatória.
 10. Providers externos devem ser substituíveis.
+11. Conteúdo ingerido não é automaticamente conhecimento do usuário.
+12. Mind maps são autorais; IA pode sugerir, mas não alterar mapas sem ação explícita do usuário.
 
 ## 5. Modelo de domínio inicial
 
@@ -99,6 +103,92 @@ storage_uri
 created_at
 updated_at
 ```
+
+### DocumentContent
+
+Representa o conteúdo extraído do documento para recuperação e contexto.
+
+```text
+id
+document_id
+page_number
+chunk_index
+text
+content_hash
+metadata_json
+created_at
+```
+
+### MindMap
+
+```text
+id
+title
+description?
+created_at
+updated_at
+```
+
+### MindMapNode
+
+```text
+id
+mind_map_id
+label
+node_type
+x
+y
+style_json?
+created_at
+updated_at
+```
+
+`node_type` pode representar `free_text`, `document_ref`, `annotation_ref`, `question_ref`, `concept_ref`, `claim_ref` ou `external_source_ref`.
+
+### MindMapEdge
+
+```text
+id
+mind_map_id
+source_node_id
+target_node_id
+label?
+edge_type?
+created_at
+updated_at
+```
+
+### MindMapNodeRef
+
+```text
+id
+mind_map_node_id
+ref_type
+ref_id
+created_at
+```
+
+Essa referência liga um nó autoral a entidades existentes sem copiar o conteúdo de origem.
+
+### AISuggestion
+
+Sugestões da IA devem permanecer separadas da autoria do usuário.
+
+```text
+id
+suggestion_type
+subject_type
+subject_id
+payload_json
+provider
+model
+status
+created_at
+accepted_at?
+rejected_at?
+```
+
+`status` deve distinguir ao menos `pending`, `accepted` e `rejected`.
 
 ### Annotation
 
@@ -313,7 +403,44 @@ Regras:
 - operações devem ser idempotentes;
 - deve existir caminho para rebuild completo do grafo.
 
-## 10. Pipeline de annotation
+## 10. Ingestão do corpus
+
+A ingestão de um PDF deve produzir uma representação pesquisável do conteúdo sem promover automaticamente tudo para o grafo.
+
+Pipeline inicial:
+
+```text
+PDF
+ │
+ ├── hash + metadados
+ ├── extração de texto/layout
+ ├── páginas
+ ├── chunks
+ └── assets/figuras quando necessário
+        │
+        ▼
+PostgreSQL
+        │
+        ├── documents
+        └── document_contents
+        │
+        ▼
+outbox
+        │
+        ├── embeddings → pgvector
+        └── eventos → TimescaleDB
+```
+
+Regras:
+
+- o documento integral pode ser indexado;
+- chunks são corpus recuperável, não `USER_KNOWLEDGE`;
+- ingestão não cria automaticamente relações autorais;
+- extração automática de conceitos, quando existir, deve ser marcada como inferência;
+- o AGE pode representar documentos e relações técnicas necessárias, mas não deve virar um espelho de todos os chunks;
+- a promoção de uma relação sugerida para uma relação autoral exige ação do usuário.
+
+## 11. Pipeline de annotation
 
 ```text
 POST /api/annotations
@@ -342,7 +469,7 @@ workers
 
 Falha em qualquer worker não altera o fato de que a annotation já foi salva.
 
-## 11. Multimodal Gateway
+## 12. Multimodal Gateway
 
 Interface conceitual:
 
@@ -397,7 +524,7 @@ raw_metadata
 
 O default é não enviar imagem ao modelo para todo highlight textual.
 
-## 12. Provider multimodal
+## 13. Provider multimodal
 
 Implementar uma interface estável e providers intercambiáveis.
 
@@ -432,7 +559,7 @@ Métricas:
 - VRAM/custo;
 - estabilidade da saída estruturada.
 
-## 13. Question Router
+## 14. Question Router
 
 Fluxo:
 
@@ -457,7 +584,7 @@ Question Router
 
 Pesquisa externa deve ser explícita no MVP.
 
-## 14. Search/Research Gateway
+## 15. Search/Research Gateway
 
 Interface:
 
@@ -477,7 +604,7 @@ metadata
 
 A resposta deve manter vínculo com a `Question` original.
 
-## 15. Importação de anotações
+## 16. Importação de anotações
 
 Pipeline:
 
@@ -508,7 +635,7 @@ Deduplicação deve considerar, quando disponíveis:
 - quote hash;
 - source annotation id.
 
-## 16. Sidecar e portabilidade
+## 17. Sidecar e portabilidade
 
 Formato inicial:
 
@@ -528,7 +655,7 @@ Exemplo:
 
 O sidecar contém dados primários de annotation. Grafo e embeddings não precisam estar nele.
 
-## 17. API inicial
+## 18. API inicial
 
 ### Documents
 
@@ -573,7 +700,63 @@ GET  /api/graph/concepts/{id}
 POST /api/graph/relations
 ```
 
-## 18. Atualização do frontend
+### Mind maps
+
+```text
+POST   /api/mind-maps
+GET    /api/mind-maps/{id}
+PATCH  /api/mind-maps/{id}
+DELETE /api/mind-maps/{id}
+POST   /api/mind-maps/{id}/nodes
+PATCH  /api/mind-maps/{id}/nodes/{node_id}
+DELETE /api/mind-maps/{id}/nodes/{node_id}
+POST   /api/mind-maps/{id}/edges
+DELETE /api/mind-maps/{id}/edges/{edge_id}
+GET    /api/mind-maps/{id}/suggestions
+POST   /api/mind-maps/{id}/suggestions/{suggestion_id}/accept
+POST   /api/mind-maps/{id}/suggestions/{suggestion_id}/reject
+```
+
+## 19. Mapas mentais
+
+O mind map é persistido em PostgreSQL como dado autoral.
+
+Separação obrigatória:
+
+```text
+mind_maps / nodes / edges
+    = estrutura criada pelo usuário
+
+Apache AGE
+    = grafo de conhecimento derivado
+
+ai_suggestions
+    = propostas ainda não aceitas
+```
+
+O frontend pode consultar AGE e pgvector para apresentar itens candidatos, mas não deve inserir esses candidatos no mapa automaticamente.
+
+Fluxo de sugestão:
+
+```text
+mapa aberto
+   │
+   ├── usuário pede sugestões
+   │        ↓
+   │   AGE + pgvector + corpus
+   │        ↓
+   │   ai_suggestions
+   │        ↓
+   │   usuário aceita/rejeita
+   │
+   └── somente ACCEPT
+            ↓
+       cria/edita node ou edge autoral
+```
+
+As operações de mapa devem preservar layout, rótulos e relações definidos pelo usuário.
+
+## 20. Atualização do frontend
 
 Para eventos assíncronos, começar com SSE:
 
@@ -588,7 +771,7 @@ job.failed
 
 WebSocket só deve ser introduzido quando houver necessidade bidirecional persistente real.
 
-## 19. Segurança e privacidade
+## 21. Segurança e privacidade
 
 - não enviar PDF inteiro a provider externo por padrão;
 - registrar qual provider recebeu cada conteúdo;
@@ -599,7 +782,7 @@ WebSocket só deve ser introduzido quando houver necessidade bidirecional persis
 - armazenar apenas o crop necessário quando possível;
 - nunca armazenar credenciais no repositório.
 
-## 20. Observabilidade
+## 22. Observabilidade
 
 Métricas mínimas:
 
@@ -623,7 +806,7 @@ notely.import.annotations.detected
 notely.import.annotations.duplicates
 ```
 
-## 21. Testes
+## 23. Testes
 
 ### Unitários
 
@@ -661,7 +844,7 @@ notely.import.annotations.duplicates
 8. verificar proveniência;
 9. consultar relação no grafo.
 
-## 22. Estratégia de implementação
+## 24. Estratégia de implementação
 
 ### Fase 1
 
@@ -681,13 +864,21 @@ Importação de annotations e sidecar.
 
 ### Fase 5
 
-Search/Research Gateway.
+Ingestão integral do corpus → chunks → embeddings → busca semântica.
 
 ### Fase 6
 
+Mind maps autorais → nós/arestas/layout → referências a documentos e anotações → sugestões separadas.
+
+### Fase 7
+
+Search/Research Gateway.
+
+### Fase 8
+
 Adapters opcionais, incluindo Clarc.
 
-## 23. Definition of Done do primeiro MVP
+## 25. Definition of Done do primeiro MVP
 
 - Notely funciona sem Clarc;
 - PDF abre e navega;
@@ -704,4 +895,7 @@ Adapters opcionais, incluindo Clarc.
 - annotation nativa pode ser importada;
 - sidecar JSON funciona;
 - Web Search possui gateway próprio;
-- testes E2E cobrem leitura, anotação, enriquecimento e grafo.
+- corpus integral pode ser ingerido e pesquisado sem promoção automática a conhecimento autoral;
+- mind maps persistem nós, arestas, layout e referências do usuário;
+- sugestões de IA permanecem separadas até aceite explícito;
+- testes E2E cobrem leitura, anotação, ingestão, enriquecimento, grafo e mapa autoral.

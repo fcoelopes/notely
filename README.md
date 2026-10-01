@@ -69,6 +69,48 @@ O objetivo não é criar um editor de documentos genérico, mas um ambiente de l
 
 A interface deve priorizar o documento. Recursos de IA, grafo e pesquisa devem aparecer como apoio, e não disputar atenção com a leitura.
 
+## Reader-first, não reader-only
+
+O Notely também ingere o conteúdo dos PDFs.
+
+Isso é necessário para que o acervo inteiro possa ser pesquisado, relacionado e usado como contexto. O sistema pode extrair texto, páginas e chunks e indexá-los semanticamente.
+
+Mas existe uma distinção fundamental:
+
+```text
+corpus
+    = o que existe nos documentos
+
+anotações
+    = o que chamou a atenção do usuário
+
+conhecimento derivado
+    = conceitos, relações e inferências
+
+mapa mental
+    = estrutura autoral criada pelo usuário
+```
+
+Ingerir um documento não significa transformar automaticamente todo o seu conteúdo em conhecimento do usuário.
+
+## Mapas mentais
+
+Os mapas mentais do Notely serão criados pelo usuário.
+
+Eles poderão conectar:
+
+- documentos;
+- anotações;
+- dúvidas;
+- conceitos;
+- claims;
+- fontes externas;
+- texto livre.
+
+O Notely pode sugerir nós ou relações usando o corpus, pgvector e o grafo de conhecimento, mas uma sugestão só passa a fazer parte do mapa quando o usuário aceitar.
+
+O mapa mental não é uma saída automática do LLM e não é sinônimo do grafo armazenado no AGE.
+
 ## Multimodal
 
 O Notely terá uma camada multimodal para situações em que texto extraído do PDF não é suficiente.
@@ -227,14 +269,16 @@ O desenvolvimento do Notely seguirá alguns princípios centrais:
 
 1. **O usuário lê.** A IA não substitui a leitura por padrão.
 2. **O usuário decide o que é relevante.**
-3. **Anotações são dados de primeira classe.**
-4. **Proveniência não pode ser perdida.**
-5. **Informação do usuário e inferência da IA devem permanecer distinguíveis.**
-6. **PostgreSQL é a fonte de verdade.**
-7. **AGE e pgvector são representações derivadas e reconstruíveis.**
-8. **Processamento pesado deve acontecer fora do caminho crítico da leitura.**
-9. **O Reader deve continuar simples.**
-10. **A arquitetura deve permitir trocar modelos e providers sem reescrever o produto.**
+3. **O corpus pode ser ingerido integralmente sem virar automaticamente conhecimento autoral.**
+4. **Mapas mentais são criados e organizados pelo usuário.**
+5. **Anotações são dados de primeira classe.**
+6. **Proveniência não pode ser perdida.**
+7. **Informação do usuário e inferência da IA devem permanecer distinguíveis.**
+8. **PostgreSQL é a fonte de verdade.**
+9. **AGE e pgvector são representações derivadas e reconstruíveis.**
+10. **Processamento pesado deve acontecer fora do caminho crítico da leitura.**
+11. **O Reader deve continuar simples.**
+12. **A arquitetura deve permitir trocar modelos e providers sem reescrever o produto.**
 
 ## Estrutura inicial do repositório
 

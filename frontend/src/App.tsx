@@ -111,7 +111,9 @@ function App() {
   });
 
   const activeAnnotations = activeDocumentId ? annotationsByDocument[activeDocumentId] ?? [] : [];
-  const pageNumber = activeDocument ? pageByDocument[activeDocument.id] ?? 1 : 1;
+  // A página é indexada pelo documento, não pelo vínculo da sessão: `activeDocument.id`
+  // é o id do link e não bate com as chaves gravadas pelos handlers de navegação.
+  const pageNumber = activeDocumentId ? pageByDocument[activeDocumentId] ?? 1 : 1;
   const numPages = activeDocument?.page_count ?? 0;
 
   const currentAnnotations = useMemo(

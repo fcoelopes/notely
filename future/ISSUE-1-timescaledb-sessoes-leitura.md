@@ -479,6 +479,15 @@ navegador (build de produção, Chromium headless):
   fechar a aba do documento: PATCH /api/reading-sessions/{id} {ended: true}
 ```
 
+### Correções após a primeira validação
+
+- **Navegação de páginas no Reader**: o estado de página era gravado por `document_id` e
+  lido por id do vínculo da sessão (`activeDocument.id`), então a página nunca mudava. O
+  sintoma aparecia em qualquer leitura de sessão, com ou sem anotação. Corrigido em
+  `frontend/src/App.tsx`, com testes de regressão (navegar entre páginas, manter a página por
+  documento e continuar navegando depois de salvar uma anotação) e verificação em navegador
+  real: `1 / 3 → 2 / 3 → 3 / 3 → 2 / 3`, com a marcação criada no meio.
+
 ### Critérios de aceite
 
 - [x] TimescaleDB está habilitado no ambiente de desenvolvimento.

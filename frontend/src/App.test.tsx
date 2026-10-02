@@ -422,6 +422,61 @@ describe("App", () => {
     expect(composer()).toBeNull();
   });
 
+  it("navigates pages and keeps the page per document", async () => {
+    await startSession({
+      theme: "tema",
+      documents: [
+        sessionDocument("doc-1", "Artigo", 0, 3),
+        sessionDocument("doc-2", "Anexo", 1, 5),
+      ],
+    });
+    await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-1/content"));
+
+    const [previous, next] = Array.from(
+      document.querySelectorAll(".page-controls button"),
+    ) as HTMLButtonElement[];
+
+    expect(document.querySelector(".page-controls span")?.textContent).toBe("1 / 3");
+    expect(previous.disabled).toBe(true);
+
+    fireEvent.click(next);
+    await waitFor(() =>
+      expect(document.querySelector(".page-controls span")?.textContent).toBe("2 / 3"),
+    );
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
+    expect(previous.disabled).toBe(false);
+
+    // Cada documento guarda a própria página.
+    fireEvent.click(screen.getAllByRole("tab")[1]);
+    await waitFor(() =>
+      expect(document.querySelector(".page-controls span")?.textContent).toBe("1 / 5"),
+    );
+
+    fireEvent.click(screen.getAllByRole("tab")[0]);
+    await waitFor(() =>
+      expect(document.querySelector(".page-controls span")?.textContent).toBe("2 / 3"),
+    );
+  });
+
+  it("keeps navigating after an annotation is saved", async () => {
+    await startSession({ theme: "tema", documents: [sessionDocument("doc-1", "Artigo", 0, 3)] });
+    await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-1/content"));
+
+    selectQuote();
+    fireEvent.click(await screen.findByTitle("Destacar"));
+    await waitFor(() => expect(api.createAnnotation).toHaveBeenCalled());
+
+    const [, next] = Array.from(
+      document.querySelectorAll(".page-controls button"),
+    ) as HTMLButtonElement[];
+    fireEvent.click(next);
+
+    await waitFor(() =>
+      expect(document.querySelector(".page-controls span")?.textContent).toBe("2 / 3"),
+    );
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
+  });
+
   it("starts the reading session on the first real interaction, not on upload", async () => {
     await startSession({ theme: "tema", documents: [sessionDocument("doc-1", "Artigo", 0)] });
     await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-1/content"));

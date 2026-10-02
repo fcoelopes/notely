@@ -64,7 +64,39 @@ Responsibilities:
 
 Do not place domain rules inside API handlers, database adapters or provider implementations.
 
-## 4. Before implementing
+## 4. Continuous improvement workflow
+
+Use one source of truth for execution planning.
+
+The expected flow is:
+
+```text
+idea discussed with the user
+        ↓
+technical/product curation
+        ↓
+if the idea is accepted
+        ↓
+create/update a versioned plan under future/
+        ↓
+create or update the GitHub issue
+        ↓
+issue references the plan
+        ↓
+implementation follows the plan
+```
+
+Rules:
+
+- The GitHub issue manages the improvement lifecycle: intent, status, ownership, review and closure.
+- The file under `future/` is the source of truth for technical scope, decisions, implementation order, risks and detailed validation.
+- Do not duplicate the complete implementation plan inside the issue.
+- The issue must contain a direct reference to its plan.
+- The plan must contain a direct reference to its issue when one exists.
+- If implementation changes the agreed approach, update the plan instead of allowing issue and plan to diverge.
+- When the work is complete, durable architectural decisions should be moved or summarized into `docs/` or an ADR as appropriate. The future plan may then be removed or retained according to the project's history policy.
+
+## 5. Before implementing
 
 Before changing code:
 
@@ -76,7 +108,7 @@ Before changing code:
 
 If the requested change conflicts with the documented architecture, stop and make the conflict explicit before implementing it.
 
-## 5. Implementation principles
+## 6. Implementation principles
 
 Prefer the smallest implementation that satisfies the requirement.
 
@@ -94,7 +126,7 @@ Prefer the smallest implementation that satisfies the requirement.
 - Never auto-accept AI suggestions into a user's mind map.
 - Do not use emojis in repository templates, technical documentation, commit messages or generated project text unless explicitly requested.
 
-## 6. Database changes
+## 7. Database changes
 
 Any schema change must include a migration.
 
@@ -109,7 +141,7 @@ Database changes must preserve these rules:
 
 Do not make a graph or vector write part of the synchronous user interaction unless the requirement explicitly demands it and the architecture has been reviewed.
 
-## 7. Reader interaction
+## 8. Reader interaction
 
 Reading and annotation must remain responsive.
 
@@ -122,7 +154,7 @@ A user action such as creating a highlight should normally:
 
 Do not block annotation creation on multimodal inference, embeddings, graph projection or web search.
 
-## 8. Multimodal and research behavior
+## 9. Multimodal and research behavior
 
 Multimodal models are assistants to the reading process.
 
@@ -140,7 +172,7 @@ Prefer sending the minimum useful visual and textual context rather than the ent
 
 Web search or research must remain distinguishable from document-derived context. Preserve source provenance for any external information added to the system.
 
-## 9. Testing and validation
+## 10. Testing and validation
 
 Every implementation must include an appropriate validation path.
 
@@ -155,7 +187,7 @@ At minimum:
 
 Do not mark work complete only because the happy path runs locally.
 
-## 10. Issues and pull requests
+## 11. Issues and pull requests
 
 Use the repository templates under `.github/`.
 
@@ -172,7 +204,7 @@ Pull requests must:
 
 Do not hide unrelated cleanup inside a feature or bug-fix PR.
 
-## 11. Commits
+## 12. Commits
 
 Keep commits coherent and scoped.
 
@@ -188,7 +220,7 @@ Preferred commit prefixes:
 
 Commit messages should describe the change, not the activity performed.
 
-## 12. Documentation
+## 13. Documentation
 
 Update documentation whenever behavior, architecture or operational assumptions change.
 
@@ -196,7 +228,7 @@ Use an ADR or equivalent technical note when making a durable architectural deci
 
 Do not modify product intent or core architectural rules only in code.
 
-## 13. Definition of done
+## 14. Definition of done
 
 A task is complete when:
 

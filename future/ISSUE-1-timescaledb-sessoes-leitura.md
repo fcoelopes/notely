@@ -2,6 +2,12 @@
 
 Issue relacionada: https://github.com/fcoelopes/notely/issues/1
 
+## Papel deste documento
+
+Este arquivo é a **fonte de verdade técnica para a execução da Issue #1**.
+
+A issue gerencia o ciclo da melhoria; este plano mantém o escopo técnico, decisões, riscos, ordem de implementação e validação. Alterações relevantes de abordagem devem ser registradas aqui para evitar divergência entre planejamento e execução.
+
 ## Objetivo
 
 Implementar a primeira trilha temporal real do Notely.

@@ -111,6 +111,16 @@ suffix
 
 Gerar SHA-256 sobre uma representação canônica desses campos.
 
+O algoritmo deve ser explicitamente versionado. Na versão inicial:
+
+```text
+passage_id_version = 1
+namespace = "notely-passage:v1"
+passage_id = sha256(namespace + canonical_anchor)
+```
+
+Uma futura alteração no algoritmo deve criar uma nova versão, sem reinterpretar silenciosamente identificadores históricos.
+
 ### Separação de responsabilidades
 
 ```text
@@ -148,10 +158,10 @@ event_id uuid NOT NULL
 event_type text NOT NULL
 session_id uuid?
 document_id uuid NOT NULL
-filename_snapshot text NOT NULL
 annotation_id uuid?
 annotation_type text?
 passage_id text?
+passage_id_version smallint?
 page_number integer?
 metadata jsonb NOT NULL DEFAULT '{}'
 ```
@@ -161,7 +171,6 @@ metadata jsonb NOT NULL DEFAULT '{}'
 ```text
 reading.started
 reading.ended
-page.viewed
 annotation.created
 annotation.updated
 ```
@@ -170,12 +179,14 @@ Exemplo:
 
 ```text
 2026-10-02 09:03:12  reading.started
-  arquivo = kijima-paper.pdf
+  session_id = ...
+  document_id = ...
 
 2026-10-02 09:07:03  annotation.created
   tipo = question
   página = 12
   passage_id = 65f8...
+  passage_id_version = 1
   annotation_id = ...
 ```
 
@@ -273,6 +284,8 @@ Criar migrations para:
 - `started_at` obrigatório;
 - annotation com e sem sessão;
 - geração determinística de `passage_id`;
+- persistência de `passage_id_version`;
+- compatibilidade entre identificadores históricos e futuras versões do algoritmo;
 - mudança de coordenadas sem mudança indevida de `passage_id`, quando o anchor textual permanece igual.
 
 ### Integração
@@ -309,7 +322,8 @@ question continua no mesmo trecho
 - [ ] Existe `reader_events` como hypertable.
 - [ ] Iniciar leitura cria sessão com `started_at`.
 - [ ] O nome do arquivo fica registrado como snapshot da sessão.
-- [ ] Criar uma marcação registra `created_at`, tipo, página e `passage_id`.
+- [ ] `reader_events` não duplica o nome do arquivo; o contexto histórico é resolvido por `session_id`.
+- [ ] Criar uma marcação registra `created_at`, tipo, página, `passage_id` e `passage_id_version`.
 - [ ] A annotation aponta para a sessão quando aplicável.
 - [ ] `annotation.created` chega ao TimescaleDB via Outbox.
 - [ ] O evento temporal referencia a annotation original.
@@ -320,8 +334,11 @@ question continua no mesmo trecho
 
 ## 13. Fora do escopo
 
+Telemetria de navegação fica fora desta entrega e será tratada em um plano separado em `future/telemetria-navegacao-leitura.md`.
+
 Não implementar nesta entrega:
 
+- `page.viewed`, `reading.paused` e `reading.resumed`;
 - cálculo sofisticado de tempo líquido de leitura;
 - dashboards;
 - heatmaps;
@@ -355,7 +372,13 @@ Mitigação: `event_id` único e consumer idempotente.
 
 O arquivo pode ser renomeado no futuro.
 
-Mitigação: `filename_snapshot` registra o contexto histórico; `document_id` mantém a identidade canônica.
+Mitigação: `reading_sessions.filename_snapshot` registra o contexto histórico; `document_id` mantém a identidade canônica. O filename não é repetido em `reader_events`.
+
+### Evolução do passage_id
+
+O algoritmo de anchoring pode melhorar no futuro.
+
+Mitigação: persistir `passage_id_version` e tratar cada versão como contrato imutável.
 
 ## 15. Ordem recomendada de implementação
 
@@ -377,3 +400,5 @@ Mitigação: `filename_snapshot` registra o contexto histórico; `document_id` m
 Persistir a sessão como entidade de domínio no PostgreSQL e a trilha temporal no TimescaleDB.
 
 A annotation continua sendo a representação principal da marcação. O TimescaleDB registra quando ela aconteceu, em qual sessão, documento e trecho, sem se tornar a fonte primária do dado.
+
+O nome do arquivo fica preservado em `reading_sessions.filename_snapshot`. Eventos temporais referenciam a sessão e o documento, evitando duplicar o filename em cada linha do TimescaleDB.

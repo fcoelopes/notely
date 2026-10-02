@@ -42,6 +42,55 @@ export interface DocumentRecord {
   storage_uri: string;
 }
 
+export interface DocumentSummary extends DocumentRecord {
+  mime_type: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ThemeOrigin = "user" | "ai_suggestion";
+
+export type SuggestionStatus = "pending" | "accepted" | "rejected";
+
+export interface StudySession {
+  id: string;
+  theme: string | null;
+  theme_origin: ThemeOrigin | null;
+  theme_updated_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SessionDocument {
+  id: string;
+  study_session_id: string;
+  document_id: string;
+  position: number;
+  added_at: string;
+  title: string;
+  filename: string;
+  page_count: number;
+}
+
+export interface ThemeSuggestion {
+  id: string;
+  suggestion_type: string;
+  subject_type: string;
+  subject_id: string;
+  status: SuggestionStatus;
+  payload: { theme?: string; rationale?: string | null };
+  provider: string;
+  model: string;
+  created_at: string;
+  accepted_at: string | null;
+  rejected_at: string | null;
+}
+
+export interface StudySessionDetail extends StudySession {
+  documents: SessionDocument[];
+  suggestions: ThemeSuggestion[];
+}
+
 export interface SelectionDraft {
   pageNumber: number;
   quote: string;

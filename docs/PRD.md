@@ -114,6 +114,16 @@ A interface deve priorizar o documento e oferecer, sem poluição visual:
 
 Ações que não pedem resposta devem permanecer silenciosas. Painéis de IA não devem abrir automaticamente para cada marcação.
 
+### Sessão de estudo
+
+Estudar um assunto costuma exigir vários documentos ao mesmo tempo. O Reader deve permitir reunir PDFs em uma sessão de estudo:
+
+- uma sessão tem um tema, escrito pelo usuário;
+- vários documentos ficam abertos na mesma sessão, com troca rápida entre eles;
+- as anotações continuam pertencendo ao documento, e não à sessão;
+- o sistema pode sugerir um tema a partir dos documentos e das anotações do usuário, e a sugestão só se torna o tema da sessão com aceite explícito;
+- uma sessão pode ser retomada depois, com os mesmos documentos.
+
 ## 9. PDFs já anotados
 
 O Notely deve suportar três situações:

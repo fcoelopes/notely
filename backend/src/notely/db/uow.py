@@ -3,11 +3,30 @@ from __future__ import annotations
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from notely.core.models import Annotation, AnnotationSource, AnnotationType, AuthorType, Document, OutboxEvent
-from notely.db.models import AnnotationRow, DocumentRow, OutboxEventRow
+from notely.core.models import (
+    AISuggestion,
+    Annotation,
+    AnnotationSource,
+    AnnotationType,
+    AuthorType,
+    Document,
+    OutboxEvent,
+    StudySession,
+    StudySessionDocument,
+    SuggestionStatus,
+    ThemeOrigin,
+)
+from notely.db.models import (
+    AISuggestionRow,
+    AnnotationRow,
+    DocumentRow,
+    OutboxEventRow,
+    StudySessionDocumentRow,
+    StudySessionRow,
+)
 
 
 class SqlAlchemyUnitOfWork:
@@ -45,6 +64,14 @@ class SqlAlchemyUnitOfWork:
             select(DocumentRow).where(DocumentRow.sha256 == sha256)
         )
         return _to_document(row) if row else None
+
+    async def list_documents(self) -> list[Document]:
+        rows = (
+            await self._active_session().scalars(
+                select(DocumentRow).order_by(DocumentRow.created_at.desc(), DocumentRow.id)
+            )
+        ).all()
+        return [_to_document(row) for row in rows]
 
     async def add_document(self, document: Document) -> None:
         self._active_session().add(
@@ -86,6 +113,7 @@ class SqlAlchemyUnitOfWork:
                 aggregate_id=event.aggregate_id,
                 event_type=event.event_type,
                 payload=event.payload,
+                event_key=event.event_key,
                 created_at=event.created_at,
                 available_at=event.available_at,
                 attempt_count=0,
@@ -105,8 +133,145 @@ class SqlAlchemyUnitOfWork:
         ).all()
         return [_to_annotation(row) for row in rows]
 
+    async def add_study_session(self, session: StudySession) -> None:
+        self._active_session().add(_study_session_row(session))
+
+    async def update_study_session(self, session: StudySession) -> None:
+        row = await self._active_session().get(StudySessionRow, session.id)
+        if row is None:
+            raise LookupError(f"study session {session.id} does not exist")
+        row.theme = session.theme
+        row.theme_origin = session.theme_origin.value if session.theme_origin else None
+        row.theme_updated_at = session.theme_updated_at
+        row.updated_at = session.updated_at
+
+    async def get_study_session(self, session_id: UUID) -> StudySession | None:
+        row = await self._active_session().get(StudySessionRow, session_id)
+        return _to_study_session(row) if row else None
+
+    async def list_study_sessions(self) -> list[StudySession]:
+        rows = (
+            await self._active_session().scalars(
+                select(StudySessionRow).order_by(
+                    StudySessionRow.updated_at.desc(),
+                    StudySessionRow.created_at.desc(),
+                    StudySessionRow.id,
+                )
+            )
+        ).all()
+        return [_to_study_session(row) for row in rows]
+
+    async def add_study_session_document(self, link: StudySessionDocument) -> None:
+        self._active_session().add(
+            StudySessionDocumentRow(
+                id=link.id,
+                study_session_id=link.study_session_id,
+                document_id=link.document_id,
+                position=link.position,
+                added_at=link.added_at,
+            )
+        )
+
+    async def get_study_session_document(
+        self, session_id: UUID, document_id: UUID
+    ) -> StudySessionDocument | None:
+        row = await self._active_session().scalar(
+            select(StudySessionDocumentRow).where(
+                StudySessionDocumentRow.study_session_id == session_id,
+                StudySessionDocumentRow.document_id == document_id,
+            )
+        )
+        return _to_study_session_document(row) if row else None
+
+    async def list_study_session_documents(
+        self, session_id: UUID
+    ) -> list[StudySessionDocument]:
+        rows = (
+            await self._active_session().scalars(
+                select(StudySessionDocumentRow)
+                .where(StudySessionDocumentRow.study_session_id == session_id)
+                .order_by(
+                    StudySessionDocumentRow.position,
+                    StudySessionDocumentRow.added_at,
+                    StudySessionDocumentRow.id,
+                )
+            )
+        ).all()
+        return [_to_study_session_document(row) for row in rows]
+
+    async def remove_study_session_document(self, session_id: UUID, document_id: UUID) -> None:
+        await self._active_session().execute(
+            delete(StudySessionDocumentRow).where(
+                StudySessionDocumentRow.study_session_id == session_id,
+                StudySessionDocumentRow.document_id == document_id,
+            )
+        )
+
+    async def next_study_session_position(self, session_id: UUID) -> int:
+        highest = await self._active_session().scalar(
+            select(func.max(StudySessionDocumentRow.position)).where(
+                StudySessionDocumentRow.study_session_id == session_id
+            )
+        )
+        return 0 if highest is None else int(highest) + 1
+
+    async def add_ai_suggestion(self, suggestion: AISuggestion) -> None:
+        self._active_session().add(
+            AISuggestionRow(
+                id=suggestion.id,
+                suggestion_type=suggestion.suggestion_type,
+                subject_type=suggestion.subject_type,
+                subject_id=suggestion.subject_id,
+                payload=suggestion.payload,
+                provider=suggestion.provider,
+                model=suggestion.model,
+                status=suggestion.status.value,
+                created_at=suggestion.created_at,
+                accepted_at=suggestion.accepted_at,
+                rejected_at=suggestion.rejected_at,
+            )
+        )
+
+    async def update_ai_suggestion(self, suggestion: AISuggestion) -> None:
+        row = await self._active_session().get(AISuggestionRow, suggestion.id)
+        if row is None:
+            raise LookupError(f"suggestion {suggestion.id} does not exist")
+        row.status = suggestion.status.value
+        row.accepted_at = suggestion.accepted_at
+        row.rejected_at = suggestion.rejected_at
+
+    async def get_ai_suggestion(self, suggestion_id: UUID) -> AISuggestion | None:
+        row = await self._active_session().get(AISuggestionRow, suggestion_id)
+        return _to_ai_suggestion(row) if row else None
+
+    async def list_ai_suggestions(
+        self, subject_type: str, subject_id: UUID
+    ) -> list[AISuggestion]:
+        rows = (
+            await self._active_session().scalars(
+                select(AISuggestionRow)
+                .where(
+                    AISuggestionRow.subject_type == subject_type,
+                    AISuggestionRow.subject_id == subject_id,
+                )
+                .order_by(AISuggestionRow.created_at.desc(), AISuggestionRow.id)
+            )
+        ).all()
+        return [_to_ai_suggestion(row) for row in rows]
+
     async def commit(self) -> None:
         await self._active_session().commit()
+
+
+def _study_session_row(session: StudySession) -> StudySessionRow:
+    return StudySessionRow(
+        id=session.id,
+        theme=session.theme,
+        theme_origin=session.theme_origin.value if session.theme_origin else None,
+        theme_updated_at=session.theme_updated_at,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
 
 
 def _to_document(row: DocumentRow) -> Document:
@@ -138,3 +303,39 @@ def _to_annotation(row: AnnotationRow) -> Annotation:
         updated_at=row.updated_at,
     )
 
+
+def _to_study_session(row: StudySessionRow) -> StudySession:
+    return StudySession(
+        id=row.id,
+        theme=row.theme,
+        theme_origin=ThemeOrigin(row.theme_origin) if row.theme_origin else None,
+        theme_updated_at=row.theme_updated_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _to_study_session_document(row: StudySessionDocumentRow) -> StudySessionDocument:
+    return StudySessionDocument(
+        id=row.id,
+        study_session_id=row.study_session_id,
+        document_id=row.document_id,
+        position=row.position,
+        added_at=row.added_at,
+    )
+
+
+def _to_ai_suggestion(row: AISuggestionRow) -> AISuggestion:
+    return AISuggestion(
+        id=row.id,
+        suggestion_type=row.suggestion_type,
+        subject_type=row.subject_type,
+        subject_id=row.subject_id,
+        payload=row.payload,
+        provider=row.provider,
+        model=row.model,
+        status=SuggestionStatus(row.status),
+        created_at=row.created_at,
+        accepted_at=row.accepted_at,
+        rejected_at=row.rejected_at,
+    )

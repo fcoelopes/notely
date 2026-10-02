@@ -24,9 +24,12 @@ npm run build
 ## Escopo atual
 
 - renderização local via PDF.js;
-- upload multipart verificado;
+- upload multipart verificado, com contagem de páginas lida no cliente antes do envio;
 - armazenamento MinIO por SHA-256;
 - posições normalizadas independentes do zoom;
-- highlights, notas, dúvidas, itens importantes e discordâncias restaurados pela API.
+- highlights, notas, dúvidas, itens importantes e discordâncias restaurados pela API, agrupados por documento;
+- sessões de estudo com tema autoral e vários documentos em abas;
+- biblioteca de documentos já ingeridos e download do PDF armazenado, para retomar uma sessão;
+- sugestões de tema de IA como sugestão pendente, com provider e modelo visíveis, aplicadas apenas por aceite explícito do usuário.
 
-A biblioteca de documentos e o download autenticado do PDF armazenado ficam para o próximo corte.
+O download autenticado (multi-usuário) do PDF armazenado fica para quando houver escopo por usuário.

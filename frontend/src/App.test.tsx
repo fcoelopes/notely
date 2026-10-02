@@ -1,0 +1,421 @@
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { App } from "./App";
+import type { Annotation, DocumentSummary, SessionDocument, StudySessionDetail, ThemeSuggestion } from "./types";
+
+interface DocumentProps {
+  file: string;
+  loading: unknown;
+  onLoadError: () => void;
+  suspense?: boolean;
+  children: React.ReactNode;
+}
+
+interface CreateAnnotationInput {
+  document_id: string;
+  page_number: number;
+  type: Annotation["type"];
+  quote: string;
+  comment: string | null;
+}
+
+const pdfDocument = vi.hoisted(() => ({ props: null as DocumentProps | null }));
+const api = vi.hoisted(() => ({
+  acceptThemeSuggestion: vi.fn(),
+  attachDocumentToSession: vi.fn(),
+  createAnnotation: vi.fn(),
+  createStudySession: vi.fn(),
+  detachDocumentFromSession: vi.fn(),
+  getStudySession: vi.fn(),
+  listAnnotations: vi.fn(),
+  listDocuments: vi.fn(),
+  listStudySessions: vi.fn(),
+  rejectThemeSuggestion: vi.fn(),
+  requestThemeSuggestion: vi.fn(),
+  setStudySessionTheme: vi.fn(),
+  uploadDocument: vi.fn(),
+}));
+const readPageCount = vi.hoisted(() => vi.fn());
+
+vi.mock("react-pdf", async () => {
+  const { useEffect } = await import("react");
+
+  return {
+    pdfjs: { GlobalWorkerOptions: { workerSrc: "" }, getDocument: vi.fn() },
+    Document: (props: DocumentProps) => {
+      pdfDocument.props = props;
+      // react-pdf 11 carrega via Suspense por padrão e o Reader não tem boundary.
+      if (props.suspense !== false) {
+        throw new Error("react-pdf requires a Suspense boundary when suspense is enabled");
+      }
+      useEffect(() => {
+        return undefined;
+      }, [props.file]);
+      return <div className="react-pdf__Document">{props.children}</div>;
+    },
+    Page: (props: { pageNumber: number }) => (
+      <div className="react-pdf__Page" data-page-number={props.pageNumber}>
+        <span>Trecho selecionável do documento</span>
+      </div>
+    ),
+  };
+});
+
+vi.mock("./lib/pdf", () => ({ readPageCount }));
+
+vi.mock("./lib/api", () => ({
+  ApiError: class ApiError extends Error {
+    constructor(readonly status: number, message: string) {
+      super(message);
+    }
+  },
+  ...api,
+  documentContentUrl: (documentId: string) => `/api/documents/${documentId}/content`,
+}));
+
+function documentSummary(id: string, title: string, pageCount = 4): DocumentSummary {
+  return {
+    id,
+    sha256: "a".repeat(64),
+    title,
+    filename: `${title}.pdf`,
+    page_count: pageCount,
+    storage_uri: `documents/${id}.pdf`,
+    mime_type: "application/pdf",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+}
+
+function sessionDocument(documentId: string, title: string, position: number, pageCount = 4): SessionDocument {
+  return {
+    id: `link-${documentId}`,
+    study_session_id: "session-1",
+    document_id: documentId,
+    position,
+    added_at: "2026-01-01T00:00:00Z",
+    title,
+    filename: `${title}.pdf`,
+    page_count: pageCount,
+  };
+}
+
+function sessionDetail(overrides: Partial<StudySessionDetail> = {}): StudySessionDetail {
+  return {
+    id: "session-1",
+    theme: null,
+    theme_origin: null,
+    theme_updated_at: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    documents: [],
+    suggestions: [],
+    ...overrides,
+  };
+}
+
+function suggestion(overrides: Partial<ThemeSuggestion> = {}): ThemeSuggestion {
+  return {
+    id: "suggestion-1",
+    suggestion_type: "study_session_theme",
+    subject_type: "study_session",
+    subject_id: "session-1",
+    status: "pending",
+    payload: { theme: "embeddings · recuperação", rationale: "Vem dos títulos da sessão." },
+    provider: "heuristic",
+    model: "frequency-v1",
+    created_at: "2026-01-01T00:00:00Z",
+    accepted_at: null,
+    rejected_at: null,
+    ...overrides,
+  };
+}
+
+const pageBounds = { left: 0, top: 0, right: 400, bottom: 800, width: 400, height: 800 };
+
+function selectQuote(quote = "Trecho") {
+  const textNode = document.querySelector(".react-pdf__Page span")?.firstChild as Text;
+  const range = document.createRange();
+  range.setStart(textNode, 0);
+  range.setEnd(textNode, quote.length);
+
+  vi.spyOn(window, "getSelection").mockReturnValue({
+    isCollapsed: false,
+    rangeCount: 1,
+    getRangeAt: () => range,
+    removeAllRanges: vi.fn(),
+    toString: () => quote,
+  } as unknown as Selection);
+
+  range.getClientRects = () =>
+    [{ left: 20, top: 40, right: 120, bottom: 60, width: 100, height: 20 }] as unknown as DOMRectList;
+  range.getBoundingClientRect = () =>
+    ({ ...pageBounds, right: 120, bottom: 60, width: 100, height: 20 }) as DOMRect;
+
+  fireEvent.mouseUp(document.querySelector(".document-stage") as Element);
+}
+
+let currentDetail: StudySessionDetail;
+let titles: Record<string, string>;
+
+async function startSession(
+  options: { theme?: string | null; documents?: SessionDocument[]; suggestions?: ThemeSuggestion[] } = {},
+) {
+  const theme = options.theme ?? null;
+  currentDetail = sessionDetail({
+    id: "session-1",
+    theme,
+    theme_origin: theme ? "user" : null,
+    documents: options.documents ?? [],
+    suggestions: options.suggestions ?? [],
+  });
+  render(<App />);
+  const input = await screen.findByLabelText("Tema da sessão (opcional)");
+  if (theme) fireEvent.change(input, { target: { value: theme } });
+  fireEvent.click(screen.getByRole("button", { name: "Começar sessão" }));
+  await waitFor(() => expect(screen.getByText("Sessão de estudo")).toBeInTheDocument());
+}
+
+function composer() {
+  return document.querySelector(".comment-composer");
+}
+
+describe("App", () => {
+  beforeEach(() => {
+    currentDetail = sessionDetail();
+    titles = {};
+    Object.values(api).forEach((fn) => fn.mockReset());
+    readPageCount.mockReset();
+    pdfDocument.props = null;
+
+    api.listDocuments.mockResolvedValue([]);
+    api.listStudySessions.mockResolvedValue([]);
+    api.listAnnotations.mockResolvedValue([]);
+    api.createStudySession.mockImplementation(() => Promise.resolve(currentDetail));
+    api.getStudySession.mockImplementation(() => Promise.resolve(currentDetail));
+    api.attachDocumentToSession.mockImplementation((_sessionId: string, documentId: string) => {
+      const link = sessionDocument(documentId, titles[documentId] ?? documentId, currentDetail.documents.length);
+      currentDetail = sessionDetail({ ...currentDetail, documents: [...currentDetail.documents, link] });
+      return Promise.resolve(link);
+    });
+    api.detachDocumentFromSession.mockImplementation((_sessionId: string, documentId: string) => {
+      currentDetail = sessionDetail({
+        ...currentDetail,
+        documents: currentDetail.documents.filter((item) => item.document_id !== documentId),
+      });
+      return Promise.resolve(undefined);
+    });
+    api.uploadDocument.mockImplementation((file: File) => {
+      const title = file.name.replace(/\.pdf$/, "");
+      titles[file.name] = title;
+      return Promise.resolve(documentSummary(file.name, title));
+    });
+    api.setStudySessionTheme.mockImplementation((_sessionId: string, theme: string) => {
+      currentDetail = sessionDetail({ ...currentDetail, theme, theme_origin: "user" });
+      return Promise.resolve(currentDetail);
+    });
+    api.requestThemeSuggestion.mockImplementation(() => {
+      currentDetail = sessionDetail({ ...currentDetail, suggestions: [suggestion()] });
+      return Promise.resolve(suggestion());
+    });
+    api.acceptThemeSuggestion.mockImplementation(() => {
+      currentDetail = sessionDetail({
+        ...currentDetail,
+        theme: "embeddings · recuperação",
+        theme_origin: "ai_suggestion",
+        suggestions: [suggestion({ status: "accepted", accepted_at: "2026-01-01T00:00:00Z" })],
+      });
+      return Promise.resolve(currentDetail);
+    });
+    api.rejectThemeSuggestion.mockImplementation(() => {
+      currentDetail = sessionDetail({
+        ...currentDetail,
+        suggestions: [suggestion({ status: "rejected", rejected_at: "2026-01-01T00:00:00Z" })],
+      });
+      return Promise.resolve(currentDetail);
+    });
+    api.createAnnotation.mockImplementation((input: CreateAnnotationInput) =>
+      Promise.resolve({
+        author_type: "user",
+        comment: input.comment,
+        created_at: "2026-01-01T00:00:00Z",
+        document_id: input.document_id,
+        id: "annotation-1",
+        page_number: input.page_number,
+        position: { rects: [], textQuoteSelector: { exact: input.quote }, version: 1 },
+        quote: input.quote,
+        source: "user_selection",
+        type: input.type,
+        updated_at: "2026-01-01T00:00:00Z",
+      } satisfies Annotation),
+    );
+
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL: vi.fn(() => "blob:notely/documento"),
+      revokeObjectURL: vi.fn(),
+    });
+    vi.stubGlobal("prompt", vi.fn());
+    Element.prototype.getBoundingClientRect = () => pageBounds as DOMRect;
+    readPageCount.mockResolvedValue(4);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("starts a study session with the theme the user wrote", async () => {
+    await startSession({ theme: "IFRS e recuperação" });
+
+    expect(api.createStudySession).toHaveBeenCalledWith("IFRS e recuperação");
+    expect(screen.getByText("IFRS e recuperação")).toBeInTheDocument();
+    expect(screen.getByText("escrito por você")).toBeInTheDocument();
+    expect(screen.getByText("Traga os PDFs deste tema.")).toBeInTheDocument();
+  });
+
+  it("keeps several documents in tabs and only renders the active one", async () => {
+    await startSession();
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const first = new File(["%PDF-1.4"], "ifrs.pdf", { type: "application/pdf" });
+    const second = new File(["%PDF-1.4"], "embeddings.pdf", { type: "application/pdf" });
+    fireEvent.change(input, { target: { files: [first, second] } });
+
+    await waitFor(() => expect(api.attachDocumentToSession).toHaveBeenCalledTimes(2));
+    const tabs = await screen.findAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["ifrs4 p.", "embeddings4 p."]);
+    expect(pdfDocument.props?.file).toBe("blob:notely/documento");
+
+    fireEvent.click(tabs[1]);
+    await waitFor(() => expect(api.listAnnotations).toHaveBeenCalledWith("embeddings.pdf"));
+    expect(pdfDocument.props?.file).toBe("blob:notely/documento");
+  });
+
+  it("opens a document already ingested through the library", async () => {
+    api.listDocuments.mockResolvedValue([documentSummary("doc-9", "Artigo antigo")]);
+    await startSession();
+
+    const select = await screen.findByLabelText("Documentos já ingeridos");
+    fireEvent.change(select, { target: { value: "doc-9" } });
+    fireEvent.submit(select.closest("form") as HTMLFormElement);
+
+    await waitFor(() => expect(api.attachDocumentToSession).toHaveBeenCalledWith("session-1", "doc-9"));
+    await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-9/content"));
+  });
+
+  it("asks for a theme suggestion and only applies it when accepted", async () => {
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0)] });
+    await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-1/content"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Sugerir tema com IA" }));
+
+    const card = await screen.findByText("Sugestão · heuristic/frequency-v1");
+    expect(card).toBeInTheDocument();
+    expect(screen.getByText("embeddings · recuperação")).toBeInTheDocument();
+    expect(screen.getByText("não definido")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Aceitar" }));
+
+    await waitFor(() => expect(api.acceptThemeSuggestion).toHaveBeenCalledWith("session-1", "suggestion-1"));
+    await waitFor(() => expect(screen.getByText("aceito de uma sugestão")).toBeInTheDocument());
+  });
+
+  it("rejects a suggestion without touching the theme", async () => {
+    await startSession({
+      theme: "tema do usuário",
+      documents: [sessionDocument("doc-1", "Artigo", 0)],
+      suggestions: [suggestion()],
+    });
+    await waitFor(() => expect(screen.getByText("Sugestão · heuristic/frequency-v1")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Descartar" }));
+
+    await waitFor(() => expect(api.rejectThemeSuggestion).toHaveBeenCalledWith("session-1", "suggestion-1"));
+    await waitFor(() => expect(screen.queryByText("Sugestão · heuristic/frequency-v1")).not.toBeInTheDocument());
+    expect(screen.getByText("tema do usuário")).toBeInTheDocument();
+  });
+
+  it("writes the annotation comment in the Reader instead of a browser dialog", async () => {
+    await startSession({ theme: "tema", documents: [sessionDocument("doc-1", "Artigo", 0)] });
+    await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-1/content"));
+
+    selectQuote();
+    fireEvent.click(await screen.findByTitle("Nota"));
+
+    const textarea = within(composer() as HTMLElement).getByRole("textbox");
+    expect(textarea).toHaveFocus();
+    expect(window.prompt).not.toHaveBeenCalled();
+
+    fireEvent.change(textarea, { target: { value: "  ideia para voltar depois  " } });
+    fireEvent.click(within(composer() as HTMLElement).getByRole("button", { name: "Salvar" }));
+
+    await waitFor(() => {
+      expect(api.createAnnotation).toHaveBeenCalledWith(
+        expect.objectContaining({ comment: "ideia para voltar depois", document_id: "doc-1", quote: "Trecho" }),
+      );
+    });
+    expect(window.prompt).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText("ideia para voltar depois")).toBeInTheDocument());
+  });
+
+  it("requires the question text before saving a dúvida", async () => {
+    await startSession({ theme: "tema", documents: [sessionDocument("doc-1", "Artigo", 0)] });
+    await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-1/content"));
+
+    selectQuote();
+    fireEvent.click(await screen.findByTitle("Dúvida"));
+
+    const save = within(composer() as HTMLElement).getByRole("button", { name: "Salvar" });
+    expect(save).toBeDisabled();
+    fireEvent.change(within(composer() as HTMLElement).getByRole("textbox"), {
+      target: { value: "Isso se aplica aqui?" },
+    });
+    expect(save).toBeEnabled();
+  });
+
+  it("saves a highlight without opening the composer", async () => {
+    await startSession({ theme: "tema", documents: [sessionDocument("doc-1", "Artigo", 0)] });
+    await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-1/content"));
+
+    selectQuote();
+    fireEvent.click(await screen.findByTitle("Destacar"));
+
+    await waitFor(() => {
+      expect(api.createAnnotation).toHaveBeenCalledWith(expect.objectContaining({ comment: null, type: "highlight" }));
+    });
+    expect(composer()).toBeNull();
+  });
+
+  it("reports when the API is unavailable", async () => {
+    api.listDocuments.mockRejectedValue(new TypeError("Failed to fetch"));
+    api.listStudySessions.mockRejectedValue(new TypeError("Failed to fetch"));
+    render(<App />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("A API do Notely não está disponível. Confirme se os serviços estão em execução."),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("resumes an existing session from the library", async () => {
+    const open = sessionDetail({
+      id: "session-7",
+      theme: "Sessão anterior",
+      theme_origin: "user",
+      documents: [sessionDocument("doc-4", "Capítulo", 0)],
+    });
+    api.listStudySessions.mockResolvedValue([open]);
+    currentDetail = open;
+    render(<App />);
+
+    const item = await screen.findByText("Sessão anterior");
+    fireEvent.click(item.closest("button") as HTMLButtonElement);
+
+    await waitFor(() => expect(api.getStudySession).toHaveBeenCalledWith("session-7"));
+    await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-4/content"));
+    expect(within(document.querySelector(".document-tabs") as HTMLElement).getByText("Capítulo")).toBeInTheDocument();
+  });
+});

@@ -30,6 +30,21 @@ class AuthorType(StrEnum):
     USER = "user"
 
 
+class ThemeOrigin(StrEnum):
+    USER = "user"
+    AI_SUGGESTION = "ai_suggestion"
+
+
+class SuggestionStatus(StrEnum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
+class AISuggestionType(StrEnum):
+    STUDY_SESSION_THEME = "study_session_theme"
+
+
 @dataclass(frozen=True, slots=True)
 class Document:
     sha256: str
@@ -79,11 +94,83 @@ class Annotation:
 
 
 @dataclass(frozen=True, slots=True)
+class StudySession:
+    """Sessão de estudo: documentos lidos em conjunto sobre um mesmo tema.
+
+    O tema é dado autoral. Quando existe, ``theme_origin`` registra se o usuário o
+    escreveu ou se ele veio de uma sugestão aceita explicitamente.
+    """
+
+    theme: str | None = None
+    theme_origin: ThemeOrigin | None = None
+    theme_updated_at: datetime | None = None
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if self.theme is not None and not self.theme.strip():
+            raise ValueError("theme cannot be blank when provided")
+        theme_set = self.theme is not None
+        if theme_set != (self.theme_origin is not None) or theme_set != (
+            self.theme_updated_at is not None
+        ):
+            raise ValueError("theme, theme_origin and theme_updated_at must be set together")
+
+
+@dataclass(frozen=True, slots=True)
+class StudySessionDocument:
+    study_session_id: UUID
+    document_id: UUID
+    position: int
+    id: UUID = field(default_factory=uuid4)
+    added_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if self.position < 0:
+            raise ValueError("position cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class AISuggestion:
+    """Sugestão de modelo, sempre separada da autoria do usuário até aceite explícito."""
+
+    suggestion_type: str
+    subject_type: str
+    subject_id: UUID
+    payload: dict[str, Any]
+    provider: str
+    model: str
+    status: SuggestionStatus = SuggestionStatus.PENDING
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utc_now)
+    accepted_at: datetime | None = None
+    rejected_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not self.payload:
+            raise ValueError("payload is required for a suggestion")
+        for label, value in (
+            ("suggestion_type", self.suggestion_type),
+            ("subject_type", self.subject_type),
+            ("provider", self.provider),
+            ("model", self.model),
+        ):
+            if not value.strip():
+                raise ValueError(f"{label} is required for a suggestion")
+        if (self.status is SuggestionStatus.ACCEPTED) != (self.accepted_at is not None):
+            raise ValueError("accepted_at must be set only for accepted suggestions")
+        if (self.status is SuggestionStatus.REJECTED) != (self.rejected_at is not None):
+            raise ValueError("rejected_at must be set only for rejected suggestions")
+
+
+@dataclass(frozen=True, slots=True)
 class OutboxEvent:
     aggregate_type: str
     aggregate_id: UUID
     event_type: str
     payload: dict[str, Any]
+    event_key: str | None = None
     id: UUID = field(default_factory=uuid4)
     created_at: datetime = field(default_factory=utc_now)
     available_at: datetime = field(default_factory=utc_now)

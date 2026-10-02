@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Protocol
@@ -33,6 +34,8 @@ class ObjectStorage(Protocol):
         sha256: str,
         original_filename: str,
     ) -> str: ...
+
+    def open_pdf(self, *, storage_uri: str) -> AsyncIterator[bytes]: ...
 
 
 @dataclass(frozen=True, slots=True)

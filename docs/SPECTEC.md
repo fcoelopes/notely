@@ -119,6 +119,33 @@ metadata_json
 created_at
 ```
 
+### StudySession
+
+Sessão de estudo: documentos lidos em conjunto sobre o mesmo tema.
+
+```text
+id
+theme?
+theme_origin?        # user | ai_suggestion
+theme_updated_at?
+created_at
+updated_at
+```
+
+O tema é autoral. `theme_origin` registra se o usuário o escreveu ou se ele veio de uma sugestão aceita explicitamente.
+
+### StudySessionDocument
+
+```text
+id
+study_session_id
+document_id
+position
+added_at
+```
+
+A ligação não duplica conteúdo: o mesmo documento pode participar de várias sessões, porque a ingestão deduplica por `sha256`.
+
 ### MindMap
 
 ```text
@@ -128,6 +155,33 @@ description?
 created_at
 updated_at
 ```
+
+### StudySession
+
+Sessão de estudo: documentos lidos em conjunto sobre o mesmo tema.
+
+```text
+id
+theme?
+theme_origin?        # user | ai_suggestion
+theme_updated_at?
+created_at
+updated_at
+```
+
+O tema é autoral. `theme_origin` registra se o usuário o escreveu ou se ele veio de uma sugestão aceita explicitamente.
+
+### StudySessionDocument
+
+```text
+id
+study_session_id
+document_id
+position
+added_at
+```
+
+A ligação não duplica conteúdo: o mesmo documento pode participar de várias sessões, porque a ingestão deduplica por `sha256`.
 
 ### MindMapNode
 
@@ -145,6 +199,33 @@ updated_at
 
 `node_type` pode representar `free_text`, `document_ref`, `annotation_ref`, `question_ref`, `concept_ref`, `claim_ref` ou `external_source_ref`.
 
+### StudySession
+
+Sessão de estudo: documentos lidos em conjunto sobre o mesmo tema.
+
+```text
+id
+theme?
+theme_origin?        # user | ai_suggestion
+theme_updated_at?
+created_at
+updated_at
+```
+
+O tema é autoral. `theme_origin` registra se o usuário o escreveu ou se ele veio de uma sugestão aceita explicitamente.
+
+### StudySessionDocument
+
+```text
+id
+study_session_id
+document_id
+position
+added_at
+```
+
+A ligação não duplica conteúdo: o mesmo documento pode participar de várias sessões, porque a ingestão deduplica por `sha256`.
+
 ### MindMapEdge
 
 ```text
@@ -157,6 +238,33 @@ edge_type?
 created_at
 updated_at
 ```
+
+### StudySession
+
+Sessão de estudo: documentos lidos em conjunto sobre o mesmo tema.
+
+```text
+id
+theme?
+theme_origin?        # user | ai_suggestion
+theme_updated_at?
+created_at
+updated_at
+```
+
+O tema é autoral. `theme_origin` registra se o usuário o escreveu ou se ele veio de uma sugestão aceita explicitamente.
+
+### StudySessionDocument
+
+```text
+id
+study_session_id
+document_id
+position
+added_at
+```
+
+A ligação não duplica conteúdo: o mesmo documento pode participar de várias sessões, porque a ingestão deduplica por `sha256`.
 
 ### MindMapNodeRef
 
@@ -189,6 +297,8 @@ rejected_at?
 ```
 
 `status` deve distinguir ao menos `pending`, `accepted` e `rejected`.
+
+`subject_type`/`subject_id` apontam para o alvo da sugestão. O primeiro uso é `study_session` com `suggestion_type = study_session_theme`: a sugestão fica pendente e só entra no tema da sessão quando o usuário aceita, momento em que `accepted_at` é preenchido.
 
 ### Annotation
 
@@ -873,6 +983,10 @@ Mind maps autorais → nós/arestas/layout → referências a documentos e anota
 ### Fase 7
 
 Search/Research Gateway.
+
+### Fase 7.5
+
+Sessões de estudo: tema autoral, múltiplos documentos por sessão, biblioteca e download do PDF armazenado, sugestões de tema registradas como `AISuggestion` pendente com aceite explícito. Ver `docs/adr/0002-study-sessions-and-theme-suggestions.md`.
 
 ### Fase 8
 

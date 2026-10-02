@@ -15,6 +15,11 @@ assignees: ''
 ## Solução proposta
 <!-- Descreva uma solução possível, sem transformar a proposta em requisito técnico prematuro. -->
 
+## Plano relacionado
+<!-- Se a melhoria já passou por curadoria e possui plano versionado, informe o caminho. Ex.: future/ISSUE-12-nome-do-plano.md. O plano é a fonte de verdade técnica; não duplique aqui os detalhes de implementação. -->
+
+`future/ISSUE-XX-nome-do-plano.md`
+
 ## Critérios de aceite
 - [ ]
 - [ ]

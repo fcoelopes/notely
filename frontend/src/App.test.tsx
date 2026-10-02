@@ -17,11 +17,14 @@ interface CreateAnnotationInput {
   type: Annotation["type"];
   quote: string;
   comment: string | null;
+  reading_session_id: string | null;
 }
 
 const pdfDocument = vi.hoisted(() => ({ props: null as DocumentProps | null }));
 const api = vi.hoisted(() => ({
   acceptThemeSuggestion: vi.fn(),
+  startReadingSession: vi.fn(),
+  updateReadingSession: vi.fn(),
   attachDocumentToSession: vi.fn(),
   createAnnotation: vi.fn(),
   createStudySession: vi.fn(),
@@ -191,6 +194,34 @@ describe("App", () => {
     api.listDocuments.mockResolvedValue([]);
     api.listStudySessions.mockResolvedValue([]);
     api.listAnnotations.mockResolvedValue([]);
+    api.startReadingSession.mockImplementation((input: { document_id: string; page_number: number | null; filename: string | null }) =>
+      Promise.resolve({
+        id: "reading-1",
+        document_id: input.document_id,
+        filename_snapshot: input.filename ?? "documento.pdf",
+        started_at: "2026-01-01T00:00:00Z",
+        ended_at: null,
+        start_page: input.page_number,
+        end_page: input.page_number,
+        last_activity_at: "2026-01-01T00:00:00Z",
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      }),
+    );
+    api.updateReadingSession.mockImplementation((sessionId: string) =>
+      Promise.resolve({
+        id: sessionId,
+        document_id: "doc-1",
+        filename_snapshot: "documento.pdf",
+        started_at: "2026-01-01T00:00:00Z",
+        ended_at: "2026-01-01T00:05:00Z",
+        start_page: 1,
+        end_page: 1,
+        last_activity_at: "2026-01-01T00:05:00Z",
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:05:00Z",
+      }),
+    );
     api.createStudySession.mockImplementation(() => Promise.resolve(currentDetail));
     api.getStudySession.mockImplementation(() => Promise.resolve(currentDetail));
     api.attachDocumentToSession.mockImplementation((_sessionId: string, documentId: string) => {
@@ -242,8 +273,11 @@ describe("App", () => {
         document_id: input.document_id,
         id: "annotation-1",
         page_number: input.page_number,
+        passage_id: "a".repeat(64),
+        passage_id_version: 1,
         position: { rects: [], textQuoteSelector: { exact: input.quote }, version: 1 },
         quote: input.quote,
+        reading_session_id: input.reading_session_id,
         source: "user_selection",
         type: input.type,
         updated_at: "2026-01-01T00:00:00Z",
@@ -386,6 +420,58 @@ describe("App", () => {
       expect(api.createAnnotation).toHaveBeenCalledWith(expect.objectContaining({ comment: null, type: "highlight" }));
     });
     expect(composer()).toBeNull();
+  });
+
+  it("starts the reading session on the first real interaction, not on upload", async () => {
+    await startSession({ theme: "tema", documents: [sessionDocument("doc-1", "Artigo", 0)] });
+    await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-1/content"));
+
+    // Abrir o documento não conta como leitura.
+    expect(api.startReadingSession).not.toHaveBeenCalled();
+
+    selectQuote();
+
+    await waitFor(() => {
+      expect(api.startReadingSession).toHaveBeenCalledWith({
+        document_id: "doc-1",
+        filename: "Artigo.pdf",
+        page_number: 1,
+      });
+    });
+  });
+
+  it("sends the reading session with the annotation", async () => {
+    await startSession({ theme: "tema", documents: [sessionDocument("doc-1", "Artigo", 0)] });
+    await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-1/content"));
+
+    selectQuote();
+    await waitFor(() => expect(api.startReadingSession).toHaveBeenCalled());
+
+    fireEvent.click(await screen.findByTitle("Destacar"));
+
+    await waitFor(() => {
+      expect(api.createAnnotation).toHaveBeenCalledWith(
+        expect.objectContaining({ reading_session_id: "reading-1" }),
+      );
+    });
+  });
+
+  it("ends the reading session when the document tab is closed", async () => {
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0), sessionDocument("doc-2", "Outro", 1)],
+    });
+    await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-1/content"));
+
+    selectQuote();
+    await waitFor(() => expect(api.startReadingSession).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByLabelText("Remover Artigo da sessão"));
+
+    await waitFor(() => expect(api.detachDocumentFromSession).toHaveBeenCalledWith("session-1", "doc-1"));
+    await waitFor(() =>
+      expect(api.updateReadingSession).toHaveBeenCalledWith("reading-1", { ended: true }),
+    );
   });
 
   it("reports when the API is unavailable", async () => {

@@ -12,12 +12,14 @@ from notely.core.models import (
     AnnotationType,
     Document,
     OutboxEvent,
+    ReadingSession,
     StudySession,
     StudySessionDocument,
     SuggestionStatus,
     ThemeOrigin,
     utc_now,
 )
+from notely.core.passage import anchor_from_position, passage_id
 from notely.core.ports import UnitOfWork
 from notely.providers.topic import TopicSuggestionContext, TopicSuggestionProvider
 
@@ -33,6 +35,14 @@ class DocumentConflictError(Exception):
 
 
 class PageOutsideDocumentError(Exception):
+    pass
+
+
+class ReadingSessionNotFoundError(Exception):
+    pass
+
+
+class ReadingSessionDocumentMismatchError(Exception):
     pass
 
 
@@ -120,6 +130,7 @@ class NotelyService:
         position: dict[str, Any],
         comment: str | None = None,
         source: AnnotationSource = AnnotationSource.USER_SELECTION,
+        reading_session_id: UUID | None = None,
     ) -> Annotation:
         async with self._uow_factory() as uow:
             document = await uow.get_document(document_id)
@@ -130,6 +141,16 @@ class NotelyService:
                     f"page {page_number} exceeds document page count {document.page_count}"
                 )
 
+            if reading_session_id is not None:
+                session = await uow.get_reading_session(reading_session_id)
+                if session is None:
+                    raise ReadingSessionNotFoundError(str(reading_session_id))
+                if session.document_id != document_id:
+                    raise ReadingSessionDocumentMismatchError(
+                        "a reading session belongs to a single document"
+                    )
+
+            exact, prefix, suffix = anchor_from_position(position)
             annotation = Annotation(
                 document_id=document_id,
                 page_number=page_number,
@@ -138,6 +159,14 @@ class NotelyService:
                 comment=comment,
                 position=position,
                 source=source,
+                reading_session_id=reading_session_id,
+                passage_id=passage_id(
+                    document_sha256=document.sha256,
+                    page_number=page_number,
+                    quote=exact or quote,
+                    prefix=prefix,
+                    suffix=suffix,
+                ),
             )
             await uow.add_annotation(annotation)
             await uow.add_outbox_event(
@@ -148,15 +177,121 @@ class NotelyService:
                     payload={
                         "annotation_id": str(annotation.id),
                         "document_id": str(document_id),
+                        "reading_session_id": (
+                            str(reading_session_id) if reading_session_id else None
+                        ),
                         "page_number": page_number,
                         "annotation_type": annotation.type.value,
+                        "passage_id": annotation.passage_id,
+                        "passage_id_version": annotation.passage_id_version,
                         "source": annotation.source.value,
                         "author_type": annotation.author_type.value,
+                        "occurred_at": annotation.created_at.isoformat(),
                     },
                 )
             )
             await uow.commit()
         return annotation
+
+    async def start_reading_session(
+        self,
+        *,
+        document_id: UUID,
+        page_number: int | None = None,
+        filename: str | None = None,
+    ) -> ReadingSession:
+        async with self._uow_factory() as uow:
+            document = await uow.get_document(document_id)
+            if document is None:
+                raise DocumentNotFoundError(str(document_id))
+            if page_number is not None and page_number > document.page_count:
+                raise PageOutsideDocumentError(
+                    f"page {page_number} exceeds document page count {document.page_count}"
+                )
+
+            started_at = utc_now()
+            session = ReadingSession(
+                document_id=document_id,
+                filename_snapshot=(filename or document.filename).strip(),
+                started_at=started_at,
+                last_activity_at=started_at,
+                start_page=page_number,
+                end_page=page_number,
+                created_at=started_at,
+                updated_at=started_at,
+            )
+            await uow.add_reading_session(session)
+            await uow.add_outbox_event(
+                OutboxEvent(
+                    aggregate_type="reading_session",
+                    aggregate_id=session.id,
+                    event_type="reading.started",
+                    payload={
+                        "reading_session_id": str(session.id),
+                        "document_id": str(document_id),
+                        "page_number": page_number,
+                        "filename_snapshot": session.filename_snapshot,
+                        "occurred_at": session.started_at.isoformat(),
+                    },
+                )
+            )
+            await uow.commit()
+        return session
+
+    async def update_reading_session(
+        self,
+        *,
+        session_id: UUID,
+        page_number: int | None = None,
+        ended: bool = False,
+    ) -> ReadingSession:
+        async with self._uow_factory() as uow:
+            session = await uow.get_reading_session(session_id)
+            if session is None:
+                raise ReadingSessionNotFoundError(str(session_id))
+            # Uma sessão já encerrada ignora atividade atrasada do Reader.
+            if not session.is_open:
+                return session
+
+            if page_number is not None:
+                document = await uow.get_document(session.document_id)
+                if document is not None and page_number > document.page_count:
+                    raise PageOutsideDocumentError(
+                        f"page {page_number} exceeds document page count {document.page_count}"
+                    )
+
+            now = utc_now()
+            ended_at = now if ended else None
+            updated = ReadingSession(
+                id=session.id,
+                document_id=session.document_id,
+                filename_snapshot=session.filename_snapshot,
+                started_at=session.started_at,
+                ended_at=ended_at,
+                start_page=session.start_page if session.start_page is not None else page_number,
+                end_page=page_number if page_number is not None else session.end_page,
+                last_activity_at=now,
+                created_at=session.created_at,
+                updated_at=now,
+            )
+            await uow.update_reading_session(updated)
+            if ended:
+                await uow.add_outbox_event(
+                    OutboxEvent(
+                        aggregate_type="reading_session",
+                        aggregate_id=session.id,
+                        event_type="reading.ended",
+                        payload={
+                            "reading_session_id": str(session.id),
+                            "document_id": str(session.document_id),
+                            "end_page": updated.end_page,
+                            "started_at": session.started_at.isoformat(),
+                            "occurred_at": now.isoformat(),
+                        },
+                    )
+                )
+            await uow.commit()
+        return updated
 
     async def list_document_annotations(self, document_id: UUID) -> list[Annotation]:
         async with self._uow_factory() as uow:

@@ -26,6 +26,7 @@ import {
 } from "./lib/api";
 import { normalizeRects } from "./lib/geometry";
 import { readPageCount } from "./lib/pdf";
+import { useReadingSession } from "./lib/useReadingSession";
 import type {
   Annotation,
   AnnotationType,
@@ -101,6 +102,14 @@ function App() {
     [activeDocumentId, session],
   );
 
+  const reportReadingError = useCallback((message: string) => setError(message), []);
+  const reading = useReadingSession({
+    documentId: activeDocumentId,
+    filename: activeDocument?.filename ?? null,
+    pageNumber: activeDocumentId ? pageByDocument[activeDocumentId] ?? 1 : 1,
+    onError: reportReadingError,
+  });
+
   const activeAnnotations = activeDocumentId ? annotationsByDocument[activeDocumentId] ?? [] : [];
   const pageNumber = activeDocument ? pageByDocument[activeDocument.id] ?? 1 : 1;
   const numPages = activeDocument?.page_count ?? 0;
@@ -163,10 +172,11 @@ function App() {
     (documentId: string) => {
       setSelection(null);
       setComposing(null);
+      reading.end();
       setActiveDocumentId(documentId);
       void loadAnnotations(documentId);
     },
-    [loadAnnotations],
+    [loadAnnotations, reading],
   );
 
   const storeLocalUrl = useCallback((documentId: string, file: File) => {
@@ -237,6 +247,7 @@ function App() {
       if (!session) return;
       setBusy(true);
       setError(null);
+      reading.end();
       try {
         await detachDocumentFromSession(session.id, documentId);
         const detail = await refreshSession(session.id);
@@ -261,10 +272,11 @@ function App() {
         setBusy(false);
       }
     },
-    [activeDocumentId, refreshSession, selection, session],
+    [activeDocumentId, reading, refreshSession, selection, session],
   );
 
   const handleCloseSession = useCallback(() => {
+    reading.end();
     Object.values(localUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
     localUrlsRef.current = {};
     setLocalUrls({});
@@ -273,7 +285,7 @@ function App() {
     setSelection(null);
     setComposing(null);
     void refreshLibrary();
-  }, [refreshLibrary]);
+  }, [reading, refreshLibrary]);
 
   const handleEditTheme = useCallback(
     async (theme: string) => {
@@ -353,6 +365,7 @@ function App() {
     if (!quote || rects.length === 0) return;
 
     const bounds = range.getBoundingClientRect();
+    reading.noteActivity(pageNumber);
     setComposing(null);
     setSelection({
       pageNumber,
@@ -364,7 +377,7 @@ function App() {
       ),
       toolbarY: Math.max(bounds.top - pageBounds.top - 58, 8),
     });
-  }, [pageNumber]);
+  }, [pageNumber, reading]);
 
   const saveSelection = useCallback(
     async (type: AnnotationType, comment: string | null) => {
@@ -379,6 +392,7 @@ function App() {
           type,
           quote: selection.quote,
           comment,
+          reading_session_id: reading.sessionId,
           position: {
             version: 1,
             rects: selection.rects,
@@ -391,6 +405,7 @@ function App() {
         }));
         setSelection(null);
         setComposing(null);
+        reading.noteActivity(selection.pageNumber);
         window.getSelection()?.removeAllRanges();
       } catch {
         setError("Não foi possível salvar a anotação. Sua seleção foi mantida para tentar novamente.");
@@ -398,7 +413,7 @@ function App() {
         setSaving(false);
       }
     },
-    [activeDocumentId, selection],
+    [activeDocumentId, reading, selection],
   );
 
   const chooseAnnotationType = useCallback(
@@ -518,13 +533,12 @@ function App() {
             <div className="page-controls" aria-label="Navegação do documento">
               <button
                 disabled={!activeDocument || pageNumber <= 1}
-                onClick={() =>
-                  activeDocumentId &&
-                  setPageByDocument((current) => ({
-                    ...current,
-                    [activeDocumentId]: Math.max((current[activeDocumentId] ?? 1) - 1, 1),
-                  }))
-                }
+                onClick={() => {
+                  if (!activeDocumentId) return;
+                  const next = Math.max(pageNumber - 1, 1);
+                  setPageByDocument((current) => ({ ...current, [activeDocumentId]: next }));
+                  reading.noteActivity(next);
+                }}
               >
                 ←
               </button>
@@ -533,16 +547,12 @@ function App() {
               </span>
               <button
                 disabled={!activeDocument || pageNumber >= numPages}
-                onClick={() =>
-                  activeDocumentId &&
-                  setPageByDocument((current) => ({
-                    ...current,
-                    [activeDocumentId]: Math.min(
-                      (current[activeDocumentId] ?? 1) + 1,
-                      activeDocument?.page_count ?? 1,
-                    ),
-                  }))
-                }
+                onClick={() => {
+                  if (!activeDocumentId) return;
+                  const next = Math.min(pageNumber + 1, activeDocument?.page_count ?? 1);
+                  setPageByDocument((current) => ({ ...current, [activeDocumentId]: next }));
+                  reading.noteActivity(next);
+                }}
               >
                 →
               </button>
@@ -605,10 +615,11 @@ function App() {
           />
           <AnnotationPanel
             annotations={activeAnnotations}
-            onGoToPage={(page) =>
-              activeDocumentId &&
-              setPageByDocument((current) => ({ ...current, [activeDocumentId]: page }))
-            }
+            onGoToPage={(page) => {
+              if (!activeDocumentId) return;
+              setPageByDocument((current) => ({ ...current, [activeDocumentId]: page }));
+              reading.noteActivity(page);
+            }}
             pageNumber={pageNumber}
           />
         </aside>

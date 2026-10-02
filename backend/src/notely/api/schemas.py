@@ -42,6 +42,7 @@ class AnnotationCreate(BaseModel):
     comment: str | None = None
     position: dict[str, Any]
     source: AnnotationSource = AnnotationSource.USER_SELECTION
+    reading_session_id: UUID | None = None
 
 
 class AnnotationResponse(BaseModel):
@@ -54,8 +55,37 @@ class AnnotationResponse(BaseModel):
     quote: str
     comment: str | None
     position: dict[str, Any]
+    passage_id: str
+    passage_id_version: int
     source: AnnotationSource
     author_type: AuthorType
+    reading_session_id: UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReadingSessionStart(BaseModel):
+    document_id: UUID
+    page_number: int | None = Field(default=None, ge=1)
+    filename: str | None = Field(default=None, max_length=400)
+
+
+class ReadingSessionUpdate(BaseModel):
+    page_number: int | None = Field(default=None, ge=1)
+    ended: bool = False
+
+
+class ReadingSessionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    document_id: UUID
+    filename_snapshot: str
+    started_at: datetime
+    ended_at: datetime | None
+    start_page: int | None
+    end_page: int | None
+    last_activity_at: datetime
     created_at: datetime
     updated_at: datetime
 

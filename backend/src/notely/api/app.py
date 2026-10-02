@@ -15,6 +15,9 @@ from notely.api.schemas import (
     AnnotationResponse,
     DocumentCreate,
     DocumentResponse,
+    ReadingSessionResponse,
+    ReadingSessionStart,
+    ReadingSessionUpdate,
     SessionDocumentCreate,
     StudySessionCreate,
     StudySessionDetailResponse,
@@ -33,6 +36,8 @@ from notely.core.services import (
     DocumentNotFoundError,
     NotelyService,
     PageOutsideDocumentError,
+    ReadingSessionDocumentMismatchError,
+    ReadingSessionNotFoundError,
     SessionDocumentConflictError,
     SessionDocumentNotFoundError,
     SessionWithoutDocumentsError,
@@ -276,9 +281,18 @@ def create_app(
                 comment=body.comment,
                 position=body.position,
                 source=body.source,
+                reading_session_id=body.reading_session_id,
             )
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found") from exc
+        except ReadingSessionNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="reading session not found"
+            ) from exc
+        except ReadingSessionDocumentMismatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
         except (PageOutsideDocumentError, ValueError) as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         return AnnotationResponse.model_validate(annotation)
@@ -295,6 +309,47 @@ def create_app(
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found") from exc
         return [AnnotationResponse.model_validate(item) for item in annotations]
+
+    @app.post(
+        "/api/reading-sessions",
+        response_model=ReadingSessionResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def start_reading_session(
+        body: ReadingSessionStart, service: NotelyService = Depends(get_service)
+    ) -> ReadingSessionResponse:
+        try:
+            session = await service.start_reading_session(
+                document_id=body.document_id,
+                page_number=body.page_number,
+                filename=body.filename,
+            )
+        except DocumentNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found") from exc
+        except (PageOutsideDocumentError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        return ReadingSessionResponse.model_validate(session)
+
+    @app.patch(
+        "/api/reading-sessions/{session_id}",
+        response_model=ReadingSessionResponse,
+    )
+    async def update_reading_session(
+        session_id: UUID, body: ReadingSessionUpdate, service: NotelyService = Depends(get_service)
+    ) -> ReadingSessionResponse:
+        try:
+            session = await service.update_reading_session(
+                session_id=session_id,
+                page_number=body.page_number,
+                ended=body.ended,
+            )
+        except ReadingSessionNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="reading session not found"
+            ) from exc
+        except (PageOutsideDocumentError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        return ReadingSessionResponse.model_validate(session)
 
     @app.post(
         "/api/study-sessions",

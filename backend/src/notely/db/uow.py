@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from notely.core.models import (
     AISuggestion,
     Annotation,
+    ReadingSession,
     AnnotationSource,
     AnnotationType,
     AuthorType,
@@ -24,6 +25,7 @@ from notely.db.models import (
     AnnotationRow,
     DocumentRow,
     OutboxEventRow,
+    ReadingSessionRow,
     StudySessionDocumentRow,
     StudySessionRow,
 )
@@ -98,8 +100,11 @@ class SqlAlchemyUnitOfWork:
                 quote=annotation.quote,
                 comment=annotation.comment,
                 position_json=annotation.position,
+                passage_id=annotation.passage_id,
+                passage_id_version=annotation.passage_id_version,
                 source=annotation.source.value,
                 author_type=annotation.author_type.value,
+                reading_session_id=annotation.reading_session_id,
                 created_at=annotation.created_at,
                 updated_at=annotation.updated_at,
             )
@@ -132,6 +137,23 @@ class SqlAlchemyUnitOfWork:
             )
         ).all()
         return [_to_annotation(row) for row in rows]
+
+    async def add_reading_session(self, session: ReadingSession) -> None:
+        self._active_session().add(_reading_session_row(session))
+
+    async def update_reading_session(self, session: ReadingSession) -> None:
+        row = await self._active_session().get(ReadingSessionRow, session.id)
+        if row is None:
+            raise LookupError(f"reading session {session.id} does not exist")
+        row.ended_at = session.ended_at
+        row.start_page = session.start_page
+        row.end_page = session.end_page
+        row.last_activity_at = session.last_activity_at
+        row.updated_at = session.updated_at
+
+    async def get_reading_session(self, session_id: UUID) -> ReadingSession | None:
+        row = await self._active_session().get(ReadingSessionRow, session_id)
+        return _to_reading_session(row) if row else None
 
     async def add_study_session(self, session: StudySession) -> None:
         self._active_session().add(_study_session_row(session))
@@ -263,6 +285,36 @@ class SqlAlchemyUnitOfWork:
         await self._active_session().commit()
 
 
+def _reading_session_row(session: ReadingSession) -> ReadingSessionRow:
+    return ReadingSessionRow(
+        id=session.id,
+        document_id=session.document_id,
+        filename_snapshot=session.filename_snapshot,
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        start_page=session.start_page,
+        end_page=session.end_page,
+        last_activity_at=session.last_activity_at,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
+
+
+def _to_reading_session(row: ReadingSessionRow) -> ReadingSession:
+    return ReadingSession(
+        id=row.id,
+        document_id=row.document_id,
+        filename_snapshot=row.filename_snapshot,
+        started_at=row.started_at,
+        ended_at=row.ended_at,
+        start_page=row.start_page,
+        end_page=row.end_page,
+        last_activity_at=row.last_activity_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
 def _study_session_row(session: StudySession) -> StudySessionRow:
     return StudySessionRow(
         id=session.id,
@@ -297,8 +349,11 @@ def _to_annotation(row: AnnotationRow) -> Annotation:
         quote=row.quote,
         comment=row.comment,
         position=row.position_json,
+        passage_id=row.passage_id,
+        passage_id_version=row.passage_id_version,
         source=AnnotationSource(row.source),
         author_type=AuthorType(row.author_type),
+        reading_session_id=row.reading_session_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

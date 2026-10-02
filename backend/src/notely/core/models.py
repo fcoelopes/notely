@@ -6,6 +6,8 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
+from notely.core.passage import PASSAGE_ID_VERSION
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -77,10 +79,13 @@ class Annotation:
     type: AnnotationType
     quote: str
     position: dict[str, Any]
+    passage_id: str
     id: UUID = field(default_factory=uuid4)
     comment: str | None = None
     source: AnnotationSource = AnnotationSource.USER_SELECTION
     author_type: AuthorType = AuthorType.USER
+    reading_session_id: UUID | None = None
+    passage_id_version: int = PASSAGE_ID_VERSION
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
@@ -91,6 +96,49 @@ class Annotation:
             raise ValueError("quote is required")
         if not self.position:
             raise ValueError("position is required to restore the annotation")
+        if len(self.passage_id) != 64:
+            raise ValueError("passage_id must be the hex digest of the passage anchor")
+        try:
+            int(self.passage_id, 16)
+        except ValueError as exc:
+            raise ValueError("passage_id must be the hex digest of the passage anchor") from exc
+        if self.passage_id_version < 1:
+            raise ValueError("passage_id_version must be at least 1")
+
+
+@dataclass(frozen=True, slots=True)
+class ReadingSession:
+    """Uma tentativa de leitura sobre um documento.
+
+    PostgreSQL guarda o estado atual (``started_at``, ``last_activity_at``, ``ended_at``);
+    a trilha temporal em TimescaleDB guarda quando cada evento aconteceu.
+    """
+
+    document_id: UUID
+    filename_snapshot: str
+    started_at: datetime = field(default_factory=utc_now)
+    last_activity_at: datetime = field(default_factory=utc_now)
+    id: UUID = field(default_factory=uuid4)
+    ended_at: datetime | None = None
+    start_page: int | None = None
+    end_page: int | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if not self.filename_snapshot.strip():
+            raise ValueError("filename_snapshot is required")
+        if self.last_activity_at < self.started_at:
+            raise ValueError("last_activity_at cannot precede started_at")
+        if self.ended_at is not None and self.ended_at < self.started_at:
+            raise ValueError("ended_at cannot precede started_at")
+        for label, page in (("start_page", self.start_page), ("end_page", self.end_page)):
+            if page is not None and page < 1:
+                raise ValueError(f"{label} must be at least 1")
+
+    @property
+    def is_open(self) -> bool:
+        return self.ended_at is None
 
 
 @dataclass(frozen=True, slots=True)

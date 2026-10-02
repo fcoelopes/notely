@@ -27,8 +27,24 @@ export interface Annotation {
   quote: string;
   comment: string | null;
   position: AnnotationPosition;
+  passage_id: string;
+  passage_id_version: number;
   source: "user_selection" | "native_pdf" | "import";
   author_type: "user";
+  reading_session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReadingSession {
+  id: string;
+  document_id: string;
+  filename_snapshot: string;
+  started_at: string;
+  ended_at: string | null;
+  start_page: number | null;
+  end_page: number | null;
+  last_activity_at: string;
   created_at: string;
   updated_at: string;
 }

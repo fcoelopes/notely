@@ -4,6 +4,7 @@ import type {
   AnnotationType,
   DocumentRecord,
   DocumentSummary,
+  ReadingSession,
   SessionDocument,
   StudySession,
   StudySessionDetail,
@@ -64,6 +65,40 @@ export function listDocuments(): Promise<DocumentSummary[]> {
   return request("/api/documents");
 }
 
+export function startReadingSession(input: {
+  document_id: string;
+  page_number: number | null;
+  filename: string | null;
+}): Promise<ReadingSession> {
+  return request("/api/reading-sessions", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateReadingSession(
+  sessionId: string,
+  input: { page_number?: number | null; ended?: boolean },
+): Promise<ReadingSession> {
+  return request(`/api/reading-sessions/${sessionId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+/**
+ * Encerramento best-effort quando a página está sendo descarregada: o Reader não tem
+ * tempo de esperar uma resposta, então a requisição sai com keepalive.
+ */
+export function endReadingSessionBeacon(sessionId: string): void {
+  void fetch(`${API_ROOT}/api/reading-sessions/${sessionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ended: true }),
+    keepalive: true,
+  }).catch(() => undefined);
+}
+
 export function listAnnotations(documentId: string): Promise<Annotation[]> {
   return request(`/api/documents/${documentId}/annotations`);
 }
@@ -75,6 +110,7 @@ export function createAnnotation(input: {
   quote: string;
   comment: string | null;
   position: AnnotationPosition;
+  reading_session_id: string | null;
 }): Promise<Annotation> {
   return request("/api/annotations", {
     method: "POST",

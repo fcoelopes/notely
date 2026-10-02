@@ -9,6 +9,7 @@ from notely.core.models import (
     Annotation,
     Document,
     OutboxEvent,
+    ReadingSession,
     StudySession,
     StudySessionDocument,
 )
@@ -37,6 +38,12 @@ class UnitOfWork(Protocol):
     async def add_outbox_event(self, event: OutboxEvent) -> None: ...
 
     async def list_annotations(self, document_id: UUID) -> list[Annotation]: ...
+
+    async def add_reading_session(self, session: ReadingSession) -> None: ...
+
+    async def update_reading_session(self, session: ReadingSession) -> None: ...
+
+    async def get_reading_session(self, session_id: UUID) -> ReadingSession | None: ...
 
     async def add_study_session(self, session: StudySession) -> None: ...
 

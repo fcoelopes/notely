@@ -24,6 +24,9 @@ from notely.core.services import (
     SessionWithoutDocumentsError,
     SuggestionAlreadyResolvedError,
 )
+from notely.core.models import ReadingSession
+from notely.core.passage import passage_id
+from notely.core.services import ReadingSessionNotFoundError
 from notely.providers.storage import ObjectStorageError, ObjectNotFoundError
 from notely.providers.topic import (
     TopicSuggestion,
@@ -52,6 +55,11 @@ async def test_create_annotation_contract_preserves_user_provenance() -> None:
         type=AnnotationType.HIGHLIGHT,
         quote="A selected passage",
         position={"rects": [{"x": 1, "y": 2, "width": 3, "height": 4}]},
+        passage_id=passage_id(
+            document_sha256="a" * 64,
+            page_number=1,
+            quote="A selected passage",
+        ),
     )
     app = create_app(lambda: StubService(annotation))  # type: ignore[arg-type]
 
@@ -405,3 +413,133 @@ async def test_document_content_for_unknown_document_is_not_found() -> None:
         response = await client.get(f"/api/documents/{uuid4()}/content")
 
     assert response.status_code == 404
+
+
+class StubReadingService:
+    """Serviço de leitura com estado em memória para o contrato da API."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.session = ReadingSession(
+            document_id=uuid4(),
+            filename_snapshot="artigo.pdf",
+            start_page=1,
+            end_page=1,
+        )
+        self.updates: list[dict[str, object]] = []
+
+    async def start_reading_session(
+        self, *, document_id: UUID, page_number: int | None = None, filename: str | None = None
+    ) -> ReadingSession:
+        if self.error is not None:
+            raise self.error
+        self.session = ReadingSession(
+            document_id=document_id,
+            filename_snapshot=filename or "artigo.pdf",
+            start_page=page_number,
+            end_page=page_number,
+        )
+        return self.session
+
+    async def update_reading_session(
+        self, *, session_id: UUID, page_number: int | None = None, ended: bool = False
+    ) -> ReadingSession:
+        if self.error is not None:
+            raise self.error
+        self.updates.append({"session_id": session_id, "page_number": page_number, "ended": ended})
+        self.session = ReadingSession(
+            id=self.session.id,
+            document_id=self.session.document_id,
+            filename_snapshot=self.session.filename_snapshot,
+            started_at=self.session.started_at,
+            ended_at=self.session.updated_at if ended else None,
+            start_page=self.session.start_page,
+            end_page=page_number if page_number is not None else self.session.end_page,
+            last_activity_at=self.session.updated_at,
+            created_at=self.session.created_at,
+            updated_at=self.session.updated_at,
+        )
+        return self.session
+
+
+async def test_reading_session_contract() -> None:
+    service = StubReadingService()
+    app = create_app(lambda: service)  # type: ignore[arg-type]
+    document_id = uuid4()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        started = await client.post(
+            "/api/reading-sessions",
+            json={"document_id": str(document_id), "page_number": 3, "filename": "capitulo.pdf"},
+        )
+        touched = await client.patch(
+            f"/api/reading-sessions/{started.json()['id']}",
+            json={"page_number": 5},
+        )
+        ended = await client.patch(
+            f"/api/reading-sessions/{started.json()['id']}",
+            json={"page_number": 5, "ended": True},
+        )
+
+    assert started.status_code == 201
+    assert started.json()["document_id"] == str(document_id)
+    assert started.json()["filename_snapshot"] == "capitulo.pdf"
+    assert started.json()["started_at"] is not None
+    assert started.json()["ended_at"] is None
+    assert touched.status_code == 200
+    assert touched.json()["end_page"] == 5
+    assert ended.status_code == 200
+    assert ended.json()["ended_at"] is not None
+
+
+async def test_reading_session_errors_are_mapped() -> None:
+    app = create_app(lambda: StubReadingService(error=ReadingSessionNotFoundError("missing")))  # type: ignore[arg-type]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.patch(f"/api/reading-sessions/{uuid4()}", json={"ended": True})
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "reading session not found"
+
+
+async def test_annotation_response_exposes_the_passage_identity() -> None:
+    document_id = uuid4()
+    annotation = Annotation(
+        document_id=document_id,
+        page_number=2,
+        type=AnnotationType.QUESTION,
+        quote="Como isso se aplica?",
+        position={
+            "rects": [{"x": 1, "y": 2, "width": 3, "height": 4}],
+            "textQuoteSelector": {"exact": "Como isso se aplica?"},
+        },
+        passage_id=passage_id(
+            document_sha256="b" * 64,
+            page_number=2,
+            quote="Como isso se aplica?",
+        ),
+    )
+    app = create_app(lambda: StubService(annotation))  # type: ignore[arg-type]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/annotations",
+            json={
+                "document_id": str(document_id),
+                "page_number": 2,
+                "type": "question",
+                "quote": "Como isso se aplica?",
+                "comment": "Dúvida de leitura",
+                "position": {"textQuoteSelector": {"exact": "Como isso se aplica?"}},
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["passage_id"] == annotation.passage_id
+    assert response.json()["passage_id_version"] == 1
+    assert response.json()["reading_session_id"] is None

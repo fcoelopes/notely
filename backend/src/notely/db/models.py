@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -46,11 +47,52 @@ class AnnotationRow(Base):
     quote: Mapped[str] = mapped_column(Text, nullable=False)
     comment: Mapped[str | None] = mapped_column(Text)
     position_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    passage_id: Mapped[str] = mapped_column(Text, nullable=False)
+    passage_id_version: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     source: Mapped[str] = mapped_column(Text, nullable=False)
     author_type: Mapped[str] = mapped_column(Text, nullable=False)
+    reading_session_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("reading_sessions.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReadingSessionRow(Base):
+    __tablename__ = "reading_sessions"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    document_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    filename_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    start_page: Mapped[int | None] = mapped_column(Integer)
+    end_page: Mapped[int | None] = mapped_column(Integer)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ReaderEventRow(Base):
+    """Projeção temporal em TimescaleDB. Nunca é fonte primária de domínio."""
+
+    __tablename__ = "reader_events"
+    __table_args__ = (UniqueConstraint("event_id", "time"),)
+
+    time: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    event_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    document_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    annotation_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    annotation_type: Mapped[str | None] = mapped_column(Text)
+    passage_id: Mapped[str | None] = mapped_column(Text)
+    passage_id_version: Mapped[int | None] = mapped_column(SmallInteger)
+    page_number: Mapped[int | None] = mapped_column(Integer)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
 
 
 class StudySessionRow(Base):

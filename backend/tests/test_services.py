@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import TracebackType
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -11,14 +11,19 @@ from notely.core.models import (
     AnnotationType,
     Document,
     OutboxEvent,
+    ReadingSession,
     StudySession,
     StudySessionDocument,
     SuggestionStatus,
     ThemeOrigin,
 )
+from notely.core.passage import PASSAGE_ID_VERSION, passage_id
 from notely.core.services import (
+    DocumentNotFoundError,
     NotelyService,
     PageOutsideDocumentError,
+    ReadingSessionDocumentMismatchError,
+    ReadingSessionNotFoundError,
     SessionDocumentConflictError,
     SessionWithoutDocumentsError,
     SuggestionAlreadyResolvedError,
@@ -38,6 +43,7 @@ class FakeUnitOfWork:
         self.annotations: list[Annotation] = []
         self.events: list[OutboxEvent] = []
         self.sessions: dict[UUID, StudySession] = {}
+        self.reading_sessions: dict[UUID, ReadingSession] = {}
         self.session_documents: list[StudySessionDocument] = []
         self.suggestions: dict[UUID, AISuggestion] = {}
         self.fail_outbox = fail_outbox
@@ -84,6 +90,15 @@ class FakeUnitOfWork:
 
     async def list_annotations(self, document_id: UUID) -> list[Annotation]:
         return [item for item in self.annotations if item.document_id == document_id]
+
+    async def add_reading_session(self, session: ReadingSession) -> None:
+        self.reading_sessions[session.id] = session
+
+    async def update_reading_session(self, session: ReadingSession) -> None:
+        self.reading_sessions[session.id] = session
+
+    async def get_reading_session(self, session_id: UUID) -> ReadingSession | None:
+        return self.reading_sessions.get(session_id)
 
     async def add_study_session(self, session: StudySession) -> None:
         self.sessions[session.id] = session
@@ -463,3 +478,180 @@ async def test_heuristic_provider_is_deterministic_and_needs_signals() -> None:
         await provider.suggest(
             TopicSuggestionContext(document_titles=(), quotes=(), comments=())
         )
+
+
+async def test_reading_session_and_outbox_share_the_transaction() -> None:
+    document = make_document()
+    uow = FakeUnitOfWork([document])
+    service = NotelyService(lambda: uow)
+
+    session = await service.start_reading_session(document_id=document.id, page_number=3)
+
+    assert session.started_at is not None
+    assert session.last_activity_at == session.started_at
+    assert session.ended_at is None
+    assert session.filename_snapshot == document.filename
+    assert session.start_page == 3
+    assert uow.committed is True
+    assert uow.reading_sessions[session.id] == session
+    assert uow.events[-1].event_type == "reading.started"
+    assert uow.events[-1].aggregate_id == session.id
+    assert uow.events[-1].payload["occurred_at"] == session.started_at.isoformat()
+
+
+async def test_reading_session_requires_a_known_document() -> None:
+    uow = FakeUnitOfWork([])
+    service = NotelyService(lambda: uow)
+
+    with pytest.raises(DocumentNotFoundError):
+        await service.start_reading_session(document_id=uuid4())
+
+    assert uow.events == []
+
+
+async def test_reading_session_touch_does_not_emit_timeline_events() -> None:
+    document = make_document()
+    uow = FakeUnitOfWork([document])
+    service = NotelyService(lambda: uow)
+    session = await service.start_reading_session(document_id=document.id, page_number=1)
+    events_after_start = len(uow.events)
+
+    touched = await service.update_reading_session(session_id=session.id, page_number=3)
+
+    assert touched.end_page == 3
+    assert touched.ended_at is None
+    assert len(uow.events) == events_after_start
+
+
+async def test_ending_a_reading_session_records_end_page_and_event() -> None:
+    document = make_document()
+    uow = FakeUnitOfWork([document])
+    service = NotelyService(lambda: uow)
+    session = await service.start_reading_session(document_id=document.id, page_number=2)
+
+    ended = await service.update_reading_session(
+        session_id=session.id, page_number=3, ended=True
+    )
+
+    assert ended.ended_at is not None
+    assert ended.end_page == 3
+    assert uow.events[-1].event_type == "reading.ended"
+    assert uow.events[-1].payload["end_page"] == 3
+
+    again = await service.update_reading_session(session_id=session.id, ended=True)
+    assert again.ended_at == ended.ended_at
+    assert [event.event_type for event in uow.events].count("reading.ended") == 1
+
+
+async def test_update_rejects_unknown_reading_session() -> None:
+    uow = FakeUnitOfWork([])
+    service = NotelyService(lambda: uow)
+
+    with pytest.raises(ReadingSessionNotFoundError):
+        await service.update_reading_session(session_id=uuid4(), ended=True)
+
+
+async def test_annotation_records_passage_identity_and_session() -> None:
+    document = make_document()
+    uow = FakeUnitOfWork([document])
+    service = NotelyService(lambda: uow)
+    session = await service.start_reading_session(document_id=document.id, page_number=1)
+
+    annotation = await service.create_annotation(
+        document_id=document.id,
+        page_number=1,
+        annotation_type=AnnotationType.QUESTION,
+        quote="Qual é o efeito da materialidade?",
+        position={
+            "rects": [{"x": 1, "y": 2, "width": 3, "height": 4}],
+            "textQuoteSelector": {
+                "exact": "Qual é o efeito da materialidade?",
+                "prefix": "IAS 1:",
+                "suffix": "no balanço",
+            },
+        },
+        reading_session_id=session.id,
+    )
+
+    expected = passage_id(
+        document_sha256=document.sha256,
+        page_number=1,
+        quote="Qual é o efeito da materialidade?",
+        prefix="IAS 1:",
+        suffix="no balanço",
+    )
+    assert annotation.passage_id == expected
+    assert annotation.passage_id_version == PASSAGE_ID_VERSION
+    assert annotation.reading_session_id == session.id
+
+    payload = uow.events[-1].payload
+    assert payload["passage_id"] == expected
+    assert payload["passage_id_version"] == PASSAGE_ID_VERSION
+    assert payload["reading_session_id"] == str(session.id)
+    assert payload["annotation_type"] == "question"
+    assert payload["occurred_at"] == annotation.created_at.isoformat()
+
+
+async def test_imported_annotation_without_session_is_valid() -> None:
+    document = make_document()
+    uow = FakeUnitOfWork([document])
+    service = NotelyService(lambda: uow)
+
+    annotation = await service.create_annotation(
+        document_id=document.id,
+        page_number=3,
+        annotation_type=AnnotationType.HIGHLIGHT,
+        quote="Trecho importado do PDF",
+        position={"rects": [{"x": 2, "y": 3, "width": 4, "height": 5}]},
+    )
+
+    assert annotation.reading_session_id is None
+    assert len(annotation.passage_id) == 64
+    assert uow.events[-1].payload["reading_session_id"] is None
+
+
+async def test_annotation_rejects_session_from_another_document() -> None:
+    first = make_document("Primeiro", digest="b")
+    second = make_document("Segundo", digest="c")
+    uow = FakeUnitOfWork([first, second])
+    service = NotelyService(lambda: uow)
+    session = await service.start_reading_session(document_id=first.id)
+
+    with pytest.raises(ReadingSessionDocumentMismatchError):
+        await service.create_annotation(
+            document_id=second.id,
+            page_number=1,
+            annotation_type=AnnotationType.NOTE,
+            quote="Trecho",
+            position={"rects": [{"x": 1, "y": 1, "width": 1, "height": 1}]},
+            reading_session_id=session.id,
+        )
+
+
+async def test_annotation_rejects_unknown_reading_session() -> None:
+    document = make_document()
+    uow = FakeUnitOfWork([document])
+    service = NotelyService(lambda: uow)
+
+    with pytest.raises(ReadingSessionNotFoundError):
+        await service.create_annotation(
+            document_id=document.id,
+            page_number=1,
+            annotation_type=AnnotationType.NOTE,
+            quote="Trecho",
+            position={"rects": [{"x": 1, "y": 1, "width": 1, "height": 1}]},
+            reading_session_id=uuid4(),
+        )
+
+
+async def test_reading_session_rejects_page_outside_document() -> None:
+    document = make_document()
+    uow = FakeUnitOfWork([document])
+    service = NotelyService(lambda: uow)
+
+    with pytest.raises(PageOutsideDocumentError):
+        await service.start_reading_session(document_id=document.id, page_number=99)
+
+    session = await service.start_reading_session(document_id=document.id)
+    with pytest.raises(PageOutsideDocumentError):
+        await service.update_reading_session(session_id=session.id, page_number=99)

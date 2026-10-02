@@ -408,3 +408,90 @@ Persistir a sessão como entidade de domínio no PostgreSQL e a trilha temporal 
 A annotation continua sendo a representação principal da marcação. O TimescaleDB registra quando ela aconteceu, em qual sessão, documento e trecho, sem se tornar a fonte primária do dado.
 
 O nome do arquivo fica preservado em `reading_sessions.filename_snapshot`. Eventos temporais referenciam a sessão e o documento, evitando duplicar o filename em cada linha do TimescaleDB.
+
+## 16. Registro de execução
+
+Implementado em 2026-10-02. Ordem seguida conforme a seção 15.
+
+### Entregue
+
+```text
+1. domínio ReadingSession + passage_id      backend/src/notely/core/{models,passage,services}.py
+2. migrations PostgreSQL                    0003: reading_sessions, annotations, reader_events
+3. migration TimescaleDB                    extensão + hypertable na mesma migration 0003
+4. API de sessão                            POST /api/reading-sessions, PATCH /api/reading-sessions/{id}
+5. annotation vinculada à sessão            POST /api/annotations aceita reading_session_id e anchor
+6. eventos Outbox                           reading.started, reading.ended, annotation.created
+7. worker Timescale                         backend/src/notely/workers/timescale.py
+8. integração Reader                        frontend/src/lib/useReadingSession.ts
+9. testes                                   unitários, integração real Postgres+Outbox+Timescale, E2E
+10. SPECTEC                                 seções 5, 7, 19.5, 23 e 24 atualizadas
+```
+
+### Decisões tomadas durante a execução
+
+- **Formato canônico do `passage_id`** explicitado: componentes unidos por `\n`
+  (`namespace`, `document_sha256`, `page_number`, `exact_quote_normalized`, `prefix`, `suffix`).
+  O backfill em SQL e o cálculo no domínio são conferidos por teste de integração, então os
+  dois caminhos não podem divergir.
+- **Claim restrito por tipo de evento**: o worker reivindica apenas eventos temporais. Sem
+  isso, eventos de outros consumidores (`document.created`, `study_session.*`) ficariam
+  pendentes ocupando o lote indefinidamente e poderiam travar eventos novos.
+- **Payloads anteriores a esta entrega**: eventos `annotation.created` gravados antes da
+  migration não carregam `occurred_at`, `passage_id` nem `reading_session_id`. Em vez de
+  descartá-los, o worker completa o payload lendo a `Annotation` original, e usa o
+  `created_at` do próprio outbox como hora do fato. O tempo da trilha continua sendo a hora
+  da marcação, não a hora da projeção.
+- **`annotation.updated`**: o tipo é aceito e projetado pelo worker porque o plano o lista
+  como evento inicial, mas nada o emite ainda — não existe endpoint de atualização de
+  anotação, e criar um está fora do escopo desta entrega.
+- **Timeout de leitura**: configurável no cliente por `VITE_READING_IDLE_TIMEOUT_MS`
+  (padrão 20 min) e `VITE_READING_TOUCH_INTERVAL_MS` (padrão 30 s de throttle do
+  `last_activity_at`). O encerramento best-effort usa `fetch` com `keepalive` no `pagehide`
+  e em `visibilitychange`, e também ocorre ao fechar a aba do documento ou a sessão de estudo.
+- **Relação com `StudySession`**: `ReadingSession` registra a leitura de um documento e
+  `StudySession` agrupa documentos por tema; o plano é anterior à `StudySession`, então as
+  duas entidades ficam independentes nesta entrega. Um vínculo opcional entre elas não foi
+  criado, para não antecipar escopo.
+- **Ambiente**: `compose.yaml` passou a usar `timescale/timescaledb:2.30.2-pg17` com
+  `shared_preload_libraries=timescaledb` explícito. A migration falha com mensagem orientando
+  o requisito quando a extensão não está disponível.
+- **Testes de integração**: rodam contra um banco dedicado `notely_test` e são pulados quando
+  ele não existe, para que a suíte continue executável em qualquer ambiente. O comando de
+  criação está no `backend/README.md`.
+
+### Evidências
+
+```text
+backend: 61 testes passando (inclui 6 de integração com PostgreSQL + Outbox + TimescaleDB)
+frontend: 15 testes passando, build sem erros
+worker CLI no banco de desenvolvimento:
+  claimed: 4, projected: 4, failed: 0
+trilha resultante (reader_events):
+  reading.started    página 6
+  annotation.created tipo question, página 6, passage_id + version 1, session_id e annotation_id
+  reading.ended      página 9
+  annotation.created de marcação anterior ao corte, projetada com o passage_id do backfill
+navegador (build de produção, Chromium headless):
+  upload do PDF: nenhuma chamada a /api/reading-sessions
+  primeira seleção de texto: POST /api/reading-sessions {document_id, page_number: 1, filename}
+  anotação: POST /api/annotations com reading_session_id e textQuoteSelector
+  fechar a aba do documento: PATCH /api/reading-sessions/{id} {ended: true}
+```
+
+### Critérios de aceite
+
+- [x] TimescaleDB está habilitado no ambiente de desenvolvimento.
+- [x] Existe `reading_sessions` no PostgreSQL.
+- [x] Existe `reader_events` como hypertable.
+- [x] Iniciar leitura cria sessão com `started_at`.
+- [x] O nome do arquivo fica registrado como snapshot da sessão.
+- [x] `reader_events` não duplica o nome do arquivo; o contexto histórico é resolvido por `session_id`.
+- [x] Criar uma marcação registra `created_at`, tipo, página, `passage_id` e `passage_id_version`.
+- [x] A annotation aponta para a sessão quando aplicável.
+- [x] `annotation.created` chega ao TimescaleDB via Outbox.
+- [x] O evento temporal referencia a annotation original.
+- [x] Retry do worker não duplica eventos.
+- [x] Annotation importada sem sessão continua válida.
+- [x] Fechar e reabrir o PDF preserva as marcações e seus identificadores.
+- [x] Existem testes de integração PostgreSQL + Outbox + TimescaleDB.

@@ -72,3 +72,21 @@ banco de teste antes de executar.
 
 Os contratos HTTP ficam disponíveis em `http://localhost:8000/docs`.
 
+## Índice textual dos PDFs (issue #2, primeira etapa)
+
+Após aplicar `infra/db/migrations/0004_document_corpus.up.sql`, o worker de corpus
+consome `document.created` do outbox, lê o PDF armazenado, verifica o SHA-256 e a
+contagem real de páginas e grava o texto por página em PostgreSQL. O campo
+`search_vector` permite busca lexical; a projeção pode ser reconstruída do PDF.
+O upload continua sem aguardar extração. Documentos antigos podem ser enfileirados
+pelo backfill idempotente:
+
+```bash
+uv run --project backend python -m notely.workers.corpus --backfill --once
+uv run --project backend python -m notely.workers.corpus
+```
+
+O índice registra `ready`, `empty` (PDF sem texto extraível) ou `failed`. Arquivos
+escaneados ainda precisam de OCR; nenhuma fonte de dúvida é exibida com base em
+texto que não foi extraído. Os testes de integração usam `notely_test` com a
+migration 0004 aplicada.

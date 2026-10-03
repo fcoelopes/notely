@@ -327,6 +327,7 @@ Responsabilidades principais:
 
 - [PRD — requisitos do produto](docs/PRD.md)
 - [SPECTEC — especificação técnica](docs/SPECTEC.md)
+- [Plano — curadoria de fontes para dúvidas em sessões de estudo](docs/plano-curadoria-fontes-duvidas.md)
 - [AGENTS.md — regras operacionais para agentes](AGENTS.md)
 
 ## Estado do projeto

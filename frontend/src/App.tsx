@@ -50,6 +50,8 @@ function App() {
   const [annotationsByDocument, setAnnotationsByDocument] = useState<Record<string, Annotation[]>>({});
   const [pageByDocument, setPageByDocument] = useState<Record<string, number>>({});
   const [scale, setScale] = useState(1.1);
+  const [stageWidth, setStageWidth] = useState(0);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selection, setSelection] = useState<SelectionDraft | null>(null);
   const [composing, setComposing] = useState<AnnotationType | null>(null);
   const [busy, setBusy] = useState(false);
@@ -57,6 +59,7 @@ function App() {
   const [suggesting, setSuggesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pageRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const localUrlsRef = useRef<Record<string, string>>({});
   const loadedAnnotations = useRef<Set<string>>(new Set());
 
@@ -97,6 +100,16 @@ function App() {
     return () => window.removeEventListener("keydown", dismiss);
   }, [composing]);
 
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    setStageWidth(stage.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setStageWidth(stage.clientWidth));
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [session]);
+
   const activeDocument = useMemo(
     () => session?.documents.find((item) => item.document_id === activeDocumentId) ?? null,
     [activeDocumentId, session],
@@ -115,6 +128,18 @@ function App() {
   // é o id do link e não bate com as chaves gravadas pelos handlers de navegação.
   const pageNumber = activeDocumentId ? pageByDocument[activeDocumentId] ?? 1 : 1;
   const numPages = activeDocument?.page_count ?? 0;
+
+  useEffect(() => {
+    setSelection(null);
+    setComposing(null);
+    window.getSelection()?.removeAllRanges();
+  }, [activeDocumentId, pageNumber, scale]);
+
+  useEffect(() => {
+    if (!stageRef.current) return;
+    stageRef.current.scrollTop = 0;
+    stageRef.current.scrollLeft = 0;
+  }, [activeDocumentId, pageNumber]);
 
   const currentAnnotations = useMemo(
     () => activeAnnotations.filter((annotation) => annotation.page_number === pageNumber),
@@ -452,62 +477,65 @@ function App() {
 
   return (
     <div className="app-shell app-shell--reading">
-      <Header onClose={handleCloseSession} />
+      <Header onClose={handleCloseSession}>
+        <div className="reader-header-content">
+          <div className="session-heading">
+            <span className="session-tag">Sessão de estudo</span>
+            <strong>{session.theme ?? "Sem tema definido"}</strong>
+            <small>
+              {session.documents.length} documento{session.documents.length === 1 ? "" : "s"} na sessão
+            </small>
+          </div>
+
+          <div className="session-actions">
+            <label className={`file-button file-button--compact ${busy ? "is-busy" : ""}`}>
+              <input
+                aria-label="Abrir PDFs"
+                accept="application/pdf,.pdf"
+                disabled={busy}
+                multiple
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.target.value = "";
+                  void handleUpload(files);
+                }}
+                type="file"
+              />
+              <span>{busy ? "Preparando…" : "Abrir PDFs"}</span>
+            </label>
+
+            {attachableDocuments.length > 0 && (
+              <form
+                className="attach-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const select = event.currentTarget.elements.namedItem("library-document");
+                  if (select instanceof HTMLSelectElement && select.value) {
+                    void handleAttachDocument(select.value);
+                  }
+                }}
+              >
+                <select aria-label="Documentos já ingeridos" name="library-document" defaultValue="">
+                  <option disabled value="">
+                    Documentos já ingeridos…
+                  </option>
+                  {attachableDocuments.map((document) => (
+                    <option key={document.id} value={document.id}>
+                      {document.title}
+                    </option>
+                  ))}
+                </select>
+                <button disabled={busy} type="submit">
+                  Adicionar
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      </Header>
       {error && <StatusBanner message={error} />}
 
       <div className="session-bar">
-        <div className="session-heading">
-          <span className="session-tag">Sessão de estudo</span>
-          <strong>{session.theme ?? "Sem tema definido"}</strong>
-          <small>
-            {session.documents.length} documento{session.documents.length === 1 ? "" : "s"} na sessão
-          </small>
-        </div>
-
-        <div className="session-actions">
-          <label className={`file-button file-button--compact ${busy ? "is-busy" : ""}`}>
-            <input
-              accept="application/pdf,.pdf"
-              disabled={busy}
-              multiple
-              onChange={(event) => {
-                const files = Array.from(event.target.files ?? []);
-                event.target.value = "";
-                void handleUpload(files);
-              }}
-              type="file"
-            />
-            <span>{busy ? "Preparando…" : "Abrir PDFs"}</span>
-          </label>
-
-          {attachableDocuments.length > 0 && (
-            <form
-              className="attach-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const select = event.currentTarget.elements.namedItem("library-document");
-                if (select instanceof HTMLSelectElement && select.value) {
-                  void handleAttachDocument(select.value);
-                }
-              }}
-            >
-              <select aria-label="Documentos já ingeridos" name="library-document" defaultValue="">
-                <option disabled value="">
-                  Documentos já ingeridos…
-                </option>
-                {attachableDocuments.map((document) => (
-                  <option key={document.id} value={document.id}>
-                    {document.title}
-                  </option>
-                ))}
-              </select>
-              <button disabled={busy} type="submit">
-                Adicionar
-              </button>
-            </form>
-          )}
-        </div>
-
         <DocumentTabs
           activeDocumentId={activeDocumentId}
           documents={session.documents}
@@ -516,24 +544,12 @@ function App() {
         />
       </div>
 
-      <div className="reader-layout">
+      <div className={`reader-layout ${sidebarOpen ? "" : "reader-layout--focused"}`}>
         <section className="reader-column">
           <div className="reader-toolbar">
-            <div className="document-meta">
-              <span className="document-dot" />
-              <div>
-                <strong>{activeDocument?.title ?? "Nenhum documento aberto"}</strong>
-                <small>
-                  {activeDocument
-                    ? `${activeDocument.filename} · ${activeAnnotations.length} anotaç${
-                        activeAnnotations.length === 1 ? "ão" : "ões"
-                      }`
-                    : "Abra um PDF para começar a ler nesta sessão"}
-                </small>
-              </div>
-            </div>
             <div className="page-controls" aria-label="Navegação do documento">
               <button
+                aria-label="Página anterior"
                 disabled={!activeDocument || pageNumber <= 1}
                 onClick={() => {
                   if (!activeDocumentId) return;
@@ -544,10 +560,20 @@ function App() {
               >
                 ←
               </button>
-              <span>
-                <b>{activeDocument ? pageNumber : "–"}</b> / {numPages || "–"}
-              </span>
+              <form className="page-jump" onSubmit={(event) => {
+                event.preventDefault();
+                const input = event.currentTarget.elements.namedItem("page");
+                if (!activeDocumentId || !(input instanceof HTMLInputElement)) return;
+                const page = Number(input.value);
+                if (!Number.isInteger(page) || page < 1 || page > numPages) return;
+                setPageByDocument((current) => ({ ...current, [activeDocumentId]: page }));
+                reading.noteActivity(page);
+              }}>
+                <input key={`${activeDocumentId}-${pageNumber}`} aria-label="Ir para página" name="page" type="number" min={1} max={numPages || 1} defaultValue={pageNumber} disabled={!activeDocument} />
+              </form>
+              <span className="page-indicator">/ {numPages || "–"}</span>
               <button
+                aria-label="Próxima página"
                 disabled={!activeDocument || pageNumber >= numPages}
                 onClick={() => {
                   if (!activeDocumentId) return;
@@ -559,14 +585,17 @@ function App() {
                 →
               </button>
             </div>
-            <div className="zoom-controls" aria-label="Zoom">
-              <button disabled={scale <= 0.7} onClick={() => setScale((value) => value - 0.1)}>−</button>
+              <div className="zoom-controls" aria-label="Zoom">
+              <button aria-label="Diminuir zoom" disabled={scale <= 0.5} onClick={() => setScale((value) => Math.max(0.5, Number((value - 0.1).toFixed(1))))}>−</button>
               <span>{Math.round(scale * 100)}%</span>
-              <button disabled={scale >= 1.8} onClick={() => setScale((value) => value + 0.1)}>+</button>
+              <button aria-label="Aumentar zoom" disabled={scale >= 3} onClick={() => setScale((value) => Math.min(3, Number((value + 0.1).toFixed(1))))}>+</button>
             </div>
+            <button className="sidebar-toggle" aria-controls="reader-notes" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((open) => !open)}>
+              Anotações <span>{activeAnnotations.length}</span>
+            </button>
           </div>
 
-          <div className="document-stage" onMouseUp={captureSelection}>
+          <div className="document-stage" ref={stageRef} role="region" aria-label="Página do PDF" tabIndex={0} onMouseUp={captureSelection}>
             {!documentUrl ? (
               <div className="document-placeholder">
                 <p>Traga os PDFs deste tema.</p>
@@ -581,11 +610,24 @@ function App() {
                 file={documentUrl}
                 key={activeDocumentId}
                 loading={<div className="document-loading">Preparando as páginas…</div>}
+                error={<div className="document-loading" role="alert">Não foi possível abrir este PDF. Tente reabrir o documento.</div>}
+                onSourceError={() => setError("Não foi possível carregar o arquivo PDF.")}
                 onLoadError={() => { setBusy(false); setError("O PDF não pôde ser interpretado."); }}
                 suspense={false}
               >
                 <div className="page-shell" ref={pageRef}>
-                  <Page pageNumber={pageNumber} renderAnnotationLayer renderTextLayer scale={scale} />
+                  <Page
+                    pageNumber={pageNumber}
+                    renderAnnotationLayer
+                    renderTextLayer
+                    scale={scale}
+                    width={stageWidth > 0 && stageWidth < 700 ? Math.max(stageWidth - 48, 240) / 1.1 : undefined}
+                    suspense={false}
+                    loading={<div className="document-loading">Carregando página…</div>}
+                    error={<div className="document-loading" role="alert">Não foi possível exibir esta página.</div>}
+                    onLoadError={() => setError("Não foi possível carregar esta página do PDF.")}
+                    onRenderError={() => setError("Não foi possível renderizar esta página do PDF.")}
+                  />
                   <AnnotationOverlay annotations={currentAnnotations} />
                   {selection && composing && (
                     <CommentComposer
@@ -605,7 +647,9 @@ function App() {
           </div>
         </section>
 
-        <aside className="reader-sidebar">
+        <aside className="reader-sidebar" id="reader-notes" hidden={!sidebarOpen}>
+          <details className="session-settings">
+            <summary>Tema e sugestões da sessão</summary>
           <SessionThemePanel
             onAcceptSuggestion={(suggestionId) => void handleAcceptSuggestion(suggestionId)}
             onEditTheme={(theme) => void handleEditTheme(theme)}
@@ -615,6 +659,7 @@ function App() {
             session={session}
             suggesting={suggesting}
           />
+          </details>
           <AnnotationPanel
             annotations={activeAnnotations}
             onGoToPage={(page) => {
@@ -630,14 +675,14 @@ function App() {
   );
 }
 
-function Header({ onClose }: { onClose?: () => void }) {
+function Header({ onClose, children }: { onClose?: () => void; children?: React.ReactNode }) {
   return (
     <header className="site-header">
       <a className="brand" href="/" onClick={(event) => { if (onClose) { event.preventDefault(); onClose(); } }}>
         <span className="brand-mark">N</span>
         <span>notely</span>
       </a>
-      <p>Leia. Anote. Conecte.</p>
+      {children ?? <p>Leia. Anote. Conecte.</p>}
       {onClose && <button className="close-reader" onClick={onClose}>Fechar sessão</button>}
     </header>
   );

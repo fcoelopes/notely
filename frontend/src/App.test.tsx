@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { Annotation, DocumentSummary, SessionDocument, StudySessionDetail, ThemeSuggestion } from "./types";
@@ -7,6 +7,7 @@ interface DocumentProps {
   file: string;
   loading: unknown;
   onLoadError: () => void;
+  onSourceError: () => void;
   suspense?: boolean;
   children: React.ReactNode;
 }
@@ -162,7 +163,7 @@ let currentDetail: StudySessionDetail;
 let titles: Record<string, string>;
 
 async function startSession(
-  options: { theme?: string | null; documents?: SessionDocument[]; suggestions?: ThemeSuggestion[] } = {},
+  options: { theme?: string | null; documents?: SessionDocument[]; suggestions?: ThemeSuggestion[]; openPanels?: boolean } = {},
 ) {
   const theme = options.theme ?? null;
   currentDetail = sessionDetail({
@@ -177,6 +178,10 @@ async function startSession(
   if (theme) fireEvent.change(input, { target: { value: theme } });
   fireEvent.click(screen.getByRole("button", { name: "Começar sessão" }));
   await waitFor(() => expect(screen.getByText("Sessão de estudo")).toBeInTheDocument());
+  if (options.openPanels !== false) {
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    fireEvent.click(screen.getByText("Tema e sugestões da sessão"));
+  }
 }
 
 function composer() {
@@ -436,25 +441,28 @@ describe("App", () => {
       document.querySelectorAll(".page-controls button"),
     ) as HTMLButtonElement[];
 
-    expect(document.querySelector(".page-controls span")?.textContent).toBe("1 / 3");
+    expect(document.querySelector(".page-controls span")?.textContent).toBe("/ 3");
     expect(previous.disabled).toBe(true);
 
+    const stage = document.querySelector(".document-stage") as HTMLDivElement;
+    stage.scrollTop = 160;
     fireEvent.click(next);
     await waitFor(() =>
-      expect(document.querySelector(".page-controls span")?.textContent).toBe("2 / 3"),
+      expect(document.querySelector(".page-controls span")?.textContent).toBe("/ 3"),
     );
+    expect(stage.scrollTop).toBe(0);
     expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
     expect(previous.disabled).toBe(false);
 
     // Cada documento guarda a própria página.
     fireEvent.click(screen.getAllByRole("tab")[1]);
     await waitFor(() =>
-      expect(document.querySelector(".page-controls span")?.textContent).toBe("1 / 5"),
+      expect(document.querySelector(".page-controls span")?.textContent).toBe("/ 5"),
     );
 
     fireEvent.click(screen.getAllByRole("tab")[0]);
     await waitFor(() =>
-      expect(document.querySelector(".page-controls span")?.textContent).toBe("2 / 3"),
+      expect(document.querySelector(".page-controls span")?.textContent).toBe("/ 3"),
     );
   });
 
@@ -472,9 +480,79 @@ describe("App", () => {
     fireEvent.click(next);
 
     await waitFor(() =>
-      expect(document.querySelector(".page-controls span")?.textContent).toBe("2 / 3"),
+      expect(document.querySelector(".page-controls span")?.textContent).toBe("/ 3"),
     );
     expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
+  });
+
+  it("jumps to a valid page and rejects pages outside the document", async () => {
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0, 4)] });
+    const input = screen.getByRole("spinbutton", { name: "Ir para página" });
+    fireEvent.change(input, { target: { value: "3" } });
+    fireEvent.submit(input.closest("form") as HTMLFormElement);
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "3");
+    const updated = screen.getByRole("spinbutton", { name: "Ir para página" });
+    for (const value of ["0", "5", "2.5", ""]) {
+      fireEvent.change(updated, { target: { value } });
+      fireEvent.submit(updated.closest("form") as HTMLFormElement);
+      expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "3");
+    }
+  });
+
+  it("can enlarge the PDF beyond 180%", async () => {
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0)] });
+    const enlarge = screen.getByRole("button", { name: "Aumentar zoom" });
+    for (let index = 0; index < 8; index += 1) fireEvent.click(enlarge);
+    expect(screen.getByText("190%")).toBeInTheDocument();
+    expect(enlarge).toBeEnabled();
+  });
+
+  it("collapses the notes panel to give the PDF more space", async () => {
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0)], openPanels: false });
+    const toggle = screen.getByRole("button", { name: "Anotações 0" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(document.getElementById("reader-notes")).not.toBeVisible();
+    expect(document.querySelector(".react-pdf__Page")).toBeVisible();
+    fireEvent.click(toggle);
+    expect(document.getElementById("reader-notes")).toBeVisible();
+  });
+
+  it.each(["Próxima página", "Aumentar zoom"])(
+    "discards an unsaved comment when using %s",
+    async (control) => {
+      await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0)] });
+      selectQuote();
+      fireEvent.click(await screen.findByTitle("Nota"));
+      expect(composer()).not.toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: control }));
+
+      await waitFor(() => expect(composer()).toBeNull());
+      expect(screen.queryByTitle("Destacar")).not.toBeInTheDocument();
+      expect(api.createAnnotation).not.toHaveBeenCalled();
+      selectQuote();
+      fireEvent.click(await screen.findByTitle("Destacar"));
+      await waitFor(() => expect(api.createAnnotation).toHaveBeenCalledWith(
+        expect.objectContaining({ page_number: control === "Próxima página" ? 2 : 1 }),
+      ));
+    },
+  );
+
+  it.each([
+    ["onSourceError", "Não foi possível carregar o arquivo PDF."],
+    ["onLoadError", "O PDF não pôde ser interpretado."],
+  ] as const)("reports PDF %s failures in the Reader", async (callback, message) => {
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0)] });
+    await waitFor(() => expect(pdfDocument.props).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    // Trigger the same callback react-pdf calls when fetching or parsing fails.
+    act(() => pdfDocument.props?.[callback]());
+    expect(screen.getByText(message)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Fechar sessão" }));
+    expect(await screen.findByLabelText("Tema da sessão (opcional)")).toBeInTheDocument();
   });
 
   it("starts the reading session on the first real interaction, not on upload", async () => {

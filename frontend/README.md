@@ -33,3 +33,42 @@ npm run build
 - sugestões de tema de IA como sugestão pendente, com provider e modelo visíveis, aplicadas apenas por aceite explícito do usuário.
 
 O download autenticado (multi-usuário) do PDF armazenado fica para quando houver escopo por usuário.
+
+## Biblioteca e navegação
+
+A biblioteca oferece visão geral, sessões e documentos, com contagens do acervo e
+busca por tema, título ou nome de arquivo, ignorando acentos. Crie uma sessão com
+ou sem tema e retome sessões existentes pelos cartões. O tema continua sendo
+editável no Reader, e sugestões de IA precisam de aceite explícito.
+
+O layout se adapta a telas pequenas; os controles de página e zoom têm nomes
+acessíveis e os elementos interativos mostram foco por teclado. A interface usa
+fontes do sistema, sem buscar fontes externas.
+
+Ao mudar de página, documento ou zoom, a seleção ainda não salva é descartada
+para evitar marcações com posições obsoletas. Falhas de carregamento do arquivo
+ou de renderização de página aparecem no Reader em português.
+
+O Reader usa cabeçalho compacto, abas e página branca sobre fundo cinza. A barra
+oferece navegação, salto direto por número de página e zoom. O botão “Anotações”
+abre o painel lateral, que começa recolhido para dar espaço ao PDF. Tema e sugestões ficam na seção
+expansível “Tema e sugestões da sessão”, fechada inicialmente.
+
+A área do PDF tem barra de rolagem vertical e mantém os controles visíveis.
+Ela pode receber foco para rolar pelo teclado. Em telas pequenas, o painel de
+anotações sobrepõe a leitura e pode ser recolhido pelo botão da barra.
+
+Para verificar o layout de rolagem com Chromium e Playwright disponíveis:
+`node tests/pdf-scroll.cjs [caminho-do-playwright] [executável-do-chromium]`.
+O teste usa uma página longa simulada e verifica o acesso ao seu final em três
+larguras de tela.
+
+A apresentação do Reader segue o padrão visual de um leitor PDF: abas, barra
+compacta de página e zoom, página centralizada sobre fundo cinza e rolagem
+vertical sempre visível. Em telas estreitas, o PDF começa ajustado à largura
+da leitura; aumentar o zoom permite examinar detalhes. Ao trocar de página,
+a leitura volta ao topo.
+
+O topo do Reader reúne tema, abertura de arquivos e saída numa linha, seguido
+pelas abas e por uma barra curta de navegação. O nome do PDF aparece nas abas,
+sem repetição na barra. O zoom vai de 50% a 300%.

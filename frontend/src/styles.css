@@ -447,3 +447,26 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .app-shell--reading .zoom-controls { padding-left: 4px; }
   .app-shell--reading .sidebar-toggle { right: 5px; }
 }
+
+/* Fontes vinculadas à dúvida ficam abaixo da anotação, sem alterar a página lida. */
+.question-sources { padding: 0 14px 10px; }
+.question-sources button { cursor: pointer; }
+.sources-toggle { border: 0; background: transparent; color: var(--sage); font-size: 11px; padding: 4px 0; text-decoration: underline; }
+.sources-content { border: 1px solid var(--line); border-radius: 7px; background: #fbfbf9; padding: 12px; font-size: 11px; line-height: 1.45; }
+.sources-content > strong { display: block; font-size: 13px; margin-bottom: 8px; }
+.sources-content > p { margin: 8px 0; color: var(--muted); }
+.sources-content > button, .source-preview > button { border: 1px solid var(--sage); border-radius: 5px; background: #fff; color: var(--sage); padding: 6px 9px; font-size: 11px; }
+.sources-list { list-style: none; padding: 0; margin: 0; }
+.sources-list li { border-top: 1px solid var(--line); padding: 10px 0; }
+.sources-list li + li { margin-top: 0; }
+.sources-list li > button { display: block; border: 0; background: none; color: var(--sage); text-align: left; padding: 0; font-size: 11px; }
+.sources-list li > button:disabled { color: var(--muted); cursor: default; }
+.sources-list p { margin: 6px 0; color: var(--ink); overflow-wrap: anywhere; }
+.sources-list p span { font-weight: 600; }
+.sources-list small { display: block; color: var(--muted); }
+.source-preview { border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 8px; }
+.source-preview-heading { display: flex; justify-content: space-between; align-items: center; }
+.source-preview-heading button { border: 0; background: none; color: var(--muted); }
+.source-preview .react-pdf__Page { max-width: 100%; overflow: hidden; }
+
+.source-state { color: var(--muted); text-decoration: none; font-size: 10px; }

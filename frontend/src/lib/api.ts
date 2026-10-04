@@ -5,6 +5,7 @@ import type {
   DocumentRecord,
   DocumentSummary,
   ReadingSession,
+  QuestionSources,
   SessionDocument,
   StudySession,
   StudySessionDetail,
@@ -111,6 +112,7 @@ export function createAnnotation(input: {
   comment: string | null;
   position: AnnotationPosition;
   reading_session_id: string | null;
+  study_session_id: string | null;
 }): Promise<Annotation> {
   return request("/api/annotations", {
     method: "POST",
@@ -181,4 +183,14 @@ export function rejectThemeSuggestion(
     `/api/study-sessions/${sessionId}/theme-suggestions/${suggestionId}/reject`,
     { method: "POST" },
   );
+}
+
+export function getQuestionSources(sessionId: string, annotationId: string): Promise<QuestionSources> {
+  return request(`/api/study-sessions/${sessionId}/questions/${annotationId}/sources`);
+}
+
+export function retryQuestionSources(sessionId: string, annotationId: string): Promise<QuestionSources> {
+  return request(`/api/study-sessions/${sessionId}/questions/${annotationId}/sources/retry`, {
+    method: "POST",
+  });
 }

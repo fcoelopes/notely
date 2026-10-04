@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from notely.core.models import (
     AnnotationSource,
     AnnotationType,
+    CurationStatus,
     AuthorType,
     SuggestionStatus,
     ThemeOrigin,
@@ -43,6 +44,7 @@ class AnnotationCreate(BaseModel):
     position: dict[str, Any]
     source: AnnotationSource = AnnotationSource.USER_SELECTION
     reading_session_id: UUID | None = None
+    study_session_id: UUID | None = None
 
 
 class AnnotationResponse(BaseModel):
@@ -60,6 +62,7 @@ class AnnotationResponse(BaseModel):
     source: AnnotationSource
     author_type: AuthorType
     reading_session_id: UUID | None
+    study_session_id: UUID | None
     created_at: datetime
     updated_at: datetime
 
@@ -143,3 +146,25 @@ class AISuggestionResponse(BaseModel):
 class StudySessionDetailResponse(StudySessionResponse):
     documents: list[StudySessionDocumentResponse] = Field(default_factory=list)
     suggestions: list[AISuggestionResponse] = Field(default_factory=list)
+
+
+class CuratedSourceResponse(BaseModel):
+    id: UUID
+    document_id: UUID
+    document_title: str
+    page_number: int
+    excerpt: str
+    reason: str
+    rank: int
+    provider: str
+    model: str
+    available: bool
+
+
+class QuestionSourcesResponse(BaseModel):
+    annotation_id: UUID
+    study_session_id: UUID
+    status: CurationStatus
+    version: int
+    last_error: str | None
+    sources: list[CuratedSourceResponse]

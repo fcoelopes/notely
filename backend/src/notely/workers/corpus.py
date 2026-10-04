@@ -14,8 +14,10 @@ from sqlalchemy import delete, exists, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from notely.core.corpus import chunk_page
 from notely.core.models import utc_now
 from notely.db.models import (
+    DocumentCorpusChunkRow,
     DocumentCorpusIndexRow,
     DocumentCorpusPageRow,
     DocumentRow,
@@ -59,6 +61,20 @@ async def save_pages(session: AsyncSession, row: DocumentRow, pages: list[str]) 
                 extractor_version=EXTRACTOR_VERSION,
             )
         )
+    await session.flush()
+    for number, text in enumerate(pages, 1):
+        for chunk in chunk_page(text):
+            session.add(
+                DocumentCorpusChunkRow(
+                    document_id=row.id,
+                    page_number=number,
+                    chunk_number=chunk.number,
+                    start_offset=chunk.start,
+                    end_offset=chunk.end,
+                    text_content=chunk.text,
+                    content_sha256=hashlib.sha256(chunk.text.encode("utf-8")).hexdigest(),
+                )
+            )
     index = await session.get(DocumentCorpusIndexRow, row.id)
     if index is None:
         index = DocumentCorpusIndexRow(document_id=row.id)

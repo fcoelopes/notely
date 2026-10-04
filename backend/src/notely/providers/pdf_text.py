@@ -6,7 +6,7 @@ from typing import BinaryIO
 
 from pypdf import PdfReader, __version__ as pypdf_version
 
-EXTRACTOR_VERSION = f"pypdf-{pypdf_version}/text-v1"
+EXTRACTOR_VERSION = f"pypdf-{pypdf_version}/text-v2-chunks"
 MAX_PAGE_TEXT_CHARS = 200_000
 
 

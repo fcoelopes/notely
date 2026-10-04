@@ -64,6 +64,21 @@ class DocumentCorpusPageRow(Base):
     )
 
 
+class DocumentCorpusChunkRow(Base):
+    __tablename__ = "document_corpus_chunks"
+
+    document_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    page_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chunk_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    start_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    text_content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    search_vector: Mapped[str] = mapped_column(
+        TSVECTOR, Computed("to_tsvector('simple', text_content)", persisted=True)
+    )
+
+
 class AnnotationRow(Base):
     __tablename__ = "annotations"
 
@@ -82,6 +97,9 @@ class AnnotationRow(Base):
     author_type: Mapped[str] = mapped_column(Text, nullable=False)
     reading_session_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("reading_sessions.id", ondelete="SET NULL")
+    )
+    study_session_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("study_sessions.id", ondelete="SET NULL")
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -164,6 +182,49 @@ class AISuggestionRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CurationRequestRow(Base):
+    __tablename__ = "question_curation_requests"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    annotation_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("annotations.id", ondelete="CASCADE"), unique=True
+    )
+    study_session_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("study_sessions.id", ondelete="CASCADE")
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CuratedSourceRow(Base):
+    __tablename__ = "question_curated_sources"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    request_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("question_curation_requests.id", ondelete="CASCADE")
+    )
+    document_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE")
+    )
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    start_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    retrieval_version: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class OutboxEventRow(Base):

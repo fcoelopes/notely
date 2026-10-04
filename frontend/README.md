@@ -30,7 +30,8 @@ npm run build
 - highlights, notas, dúvidas, itens importantes e discordâncias restaurados pela API, agrupados por documento;
 - sessões de estudo com tema autoral e vários documentos em abas;
 - biblioteca de documentos já ingeridos e download do PDF armazenado, para retomar uma sessão;
-- sugestões de tema de IA como sugestão pendente, com provider e modelo visíveis, aplicadas apenas por aceite explícito do usuário.
+- sugestões de tema de IA como sugestão pendente, com provider e modelo visíveis, aplicadas apenas por aceite explícito do usuário;
+- fontes sugeridas para dúvidas criadas numa sessão, com estado assíncrono, excerto verificável, prévia da página e navegação explícita.
 
 O download autenticado (multi-usuário) do PDF armazenado fica para quando houver escopo por usuário.
 
@@ -72,3 +73,16 @@ a leitura volta ao topo.
 O topo do Reader reúne tema, abertura de arquivos e saída numa linha, seguido
 pelas abas e por uma barra curta de navegação. O nome do PDF aparece nas abas,
 sem repetição na barra. O zoom vai de 50% a 300%.
+
+## Fontes sugeridas para dúvidas
+
+Ao salvar uma Dúvida, o Reader envia o identificador da sessão de estudo e
+continua disponível imediatamente. “Ver fontes” mostra a busca em andamento,
+até três fontes, ausência de fonte útil ou indisponibilidade. A prévia não troca
+a página principal; “Abrir no Reader” faz a navegação. Fontes de documentos
+retirados da sessão ficam sinalizadas como indisponíveis.
+
+O provider padrão do backend é busca lexical local, apresentado como tal.
+O texto da fonte e o motivo da sugestão aparecem separados, com provider e
+modelo visíveis. O painel consulta novamente a API enquanto o estado está
+`pending` e oferece retry após `failed` ou `no_source`.

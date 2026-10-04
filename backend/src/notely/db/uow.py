@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from notely.core.models import (
     AISuggestion,
     Annotation,
+    CurationRequest,
+    CurationStatus,
+    CuratedSource,
     ReadingSession,
     AnnotationSource,
     AnnotationType,
@@ -20,9 +23,14 @@ from notely.core.models import (
     SuggestionStatus,
     ThemeOrigin,
 )
+from notely.providers.pdf_text import EXTRACTOR_VERSION
 from notely.db.models import (
     AISuggestionRow,
     AnnotationRow,
+    CurationRequestRow,
+    CuratedSourceRow,
+    DocumentCorpusChunkRow,
+    DocumentCorpusIndexRow,
     DocumentRow,
     OutboxEventRow,
     ReadingSessionRow,
@@ -105,9 +113,67 @@ class SqlAlchemyUnitOfWork:
                 source=annotation.source.value,
                 author_type=annotation.author_type.value,
                 reading_session_id=annotation.reading_session_id,
+                study_session_id=annotation.study_session_id,
                 created_at=annotation.created_at,
                 updated_at=annotation.updated_at,
             )
+        )
+
+    async def get_annotation(self, annotation_id: UUID) -> Annotation | None:
+        row = await self._active_session().get(AnnotationRow, annotation_id)
+        return _to_annotation(row) if row and row.deleted_at is None else None
+
+    async def add_curation_request(self, request: CurationRequest) -> None:
+        self._active_session().add(CurationRequestRow(
+            id=request.id, annotation_id=request.annotation_id,
+            study_session_id=request.study_session_id, version=request.version,
+            status=request.status.value, attempt_count=request.attempt_count,
+            last_error=request.last_error, created_at=request.created_at,
+            updated_at=request.updated_at, completed_at=request.completed_at,
+        ))
+
+    async def get_curation_request(self, annotation_id: UUID) -> CurationRequest | None:
+        row = await self._active_session().scalar(
+            select(CurationRequestRow).where(CurationRequestRow.annotation_id == annotation_id)
+        )
+        return _to_curation_request(row) if row else None
+
+    async def update_curation_request(self, request: CurationRequest) -> None:
+        row = await self._active_session().get(CurationRequestRow, request.id)
+        if row is None:
+            raise LookupError("curation request does not exist")
+        row.version = request.version
+        row.status = request.status.value
+        row.attempt_count = request.attempt_count
+        row.last_error = request.last_error
+        row.updated_at = request.updated_at
+        row.completed_at = request.completed_at
+
+    async def list_curated_sources(self, request_id: UUID) -> list[CuratedSource]:
+        rows = (await self._active_session().scalars(
+            select(CuratedSourceRow).where(CuratedSourceRow.request_id == request_id)
+            .order_by(CuratedSourceRow.rank)
+        )).all()
+        return [_to_curated_source(row) for row in rows]
+
+    async def source_is_current(self, source: CuratedSource, session_id: UUID) -> bool:
+        if await self.get_study_session_document(session_id, source.document_id) is None:
+            return False
+        chunk = await self._active_session().get(
+            DocumentCorpusChunkRow,
+            (source.document_id, source.page_number, source.chunk_number),
+        )
+        index = await self._active_session().get(DocumentCorpusIndexRow, source.document_id)
+        document = await self.get_document(source.document_id)
+        return bool(
+            chunk and index and document and index.status == "ready"
+            and index.extractor_version == EXTRACTOR_VERSION
+            and index.source_sha256 == document.sha256
+            and source.page_number <= document.page_count
+            and chunk.content_sha256 == source.chunk_sha256
+            and chunk.text_content == source.excerpt
+            and chunk.start_offset == source.start_offset
+            and chunk.end_offset == source.end_offset
         )
 
     async def add_outbox_event(self, event: OutboxEvent) -> None:
@@ -354,6 +420,7 @@ def _to_annotation(row: AnnotationRow) -> Annotation:
         source=AnnotationSource(row.source),
         author_type=AuthorType(row.author_type),
         reading_session_id=row.reading_session_id,
+        study_session_id=row.study_session_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -393,4 +460,25 @@ def _to_ai_suggestion(row: AISuggestionRow) -> AISuggestion:
         created_at=row.created_at,
         accepted_at=row.accepted_at,
         rejected_at=row.rejected_at,
+    )
+
+
+def _to_curation_request(row: CurationRequestRow) -> CurationRequest:
+    return CurationRequest(
+        id=row.id, annotation_id=row.annotation_id,
+        study_session_id=row.study_session_id, version=row.version,
+        status=CurationStatus(row.status), attempt_count=row.attempt_count,
+        last_error=row.last_error, created_at=row.created_at,
+        updated_at=row.updated_at, completed_at=row.completed_at,
+    )
+
+
+def _to_curated_source(row: CuratedSourceRow) -> CuratedSource:
+    return CuratedSource(
+        id=row.id, request_id=row.request_id, document_id=row.document_id,
+        page_number=row.page_number, chunk_number=row.chunk_number,
+        chunk_sha256=row.chunk_sha256, start_offset=row.start_offset,
+        end_offset=row.end_offset, excerpt=row.excerpt, reason=row.reason,
+        rank=row.rank, provider=row.provider, model=row.model,
+        retrieval_version=row.retrieval_version, created_at=row.created_at,
     )

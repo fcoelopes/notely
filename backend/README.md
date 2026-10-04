@@ -90,3 +90,27 @@ O índice registra `ready`, `empty` (PDF sem texto extraível) ou `failed`. Arqu
 escaneados ainda precisam de OCR; nenhuma fonte de dúvida é exibida com base em
 texto que não foi extraído. Os testes de integração usam `notely_test` com a
 migration 0004 aplicada.
+
+## Fontes para dúvidas da sessão (issue #2)
+
+Aplicar as migrations `0005_corpus_chunks` e `0006_question_curation` antes de
+iniciar os workers. A versão do extrator mudou para `text-v2-chunks`; reconstruir
+os documentos indexados anteriormente:
+
+```bash
+uv run --project backend python -m notely.workers.corpus --backfill --once
+uv run --project backend python -m notely.workers.corpus
+uv run --project backend python -m notely.workers.curation
+```
+
+O Reader envia `study_session_id` ao criar uma dúvida. A API confirma a anotação
+e grava o pedido e o evento de outbox na mesma transação. O worker de curadoria
+procura apenas nos PDFs dessa sessão, verifica cada excerto contra o índice atual
+e persiste até três fontes. O provider padrão é `lexical_search` local; o Reader
+o identifica como busca lexical. Não há resposta automática nem pesquisa web.
+
+`GET /api/study-sessions/{session_id}/questions/{annotation_id}/sources` informa
+`pending`, `ready`, `no_source` ou `failed`, com fontes e disponibilidade atual.
+`POST` no mesmo caminho acrescido de `/retry` reinicia um pedido `failed` ou
+`no_source`. O worker usa retry com backoff enquanto o corpus está pendente; ao
+esgotar as tentativas, registra `failed` sem alterar a dúvida.

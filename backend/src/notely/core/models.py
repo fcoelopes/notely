@@ -37,6 +37,13 @@ class ThemeOrigin(StrEnum):
     AI_SUGGESTION = "ai_suggestion"
 
 
+class CurationStatus(StrEnum):
+    PENDING = "pending"
+    READY = "ready"
+    NO_SOURCE = "no_source"
+    FAILED = "failed"
+
+
 class SuggestionStatus(StrEnum):
     PENDING = "pending"
     ACCEPTED = "accepted"
@@ -85,6 +92,7 @@ class Annotation:
     source: AnnotationSource = AnnotationSource.USER_SELECTION
     author_type: AuthorType = AuthorType.USER
     reading_session_id: UUID | None = None
+    study_session_id: UUID | None = None
     passage_id_version: int = PASSAGE_ID_VERSION
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
@@ -210,6 +218,39 @@ class AISuggestion:
             raise ValueError("accepted_at must be set only for accepted suggestions")
         if (self.status is SuggestionStatus.REJECTED) != (self.rejected_at is not None):
             raise ValueError("rejected_at must be set only for rejected suggestions")
+
+
+@dataclass(frozen=True, slots=True)
+class CurationRequest:
+    annotation_id: UUID
+    study_session_id: UUID
+    id: UUID = field(default_factory=uuid4)
+    version: int = 1
+    status: CurationStatus = CurationStatus.PENDING
+    attempt_count: int = 0
+    last_error: str | None = None
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    completed_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CuratedSource:
+    request_id: UUID
+    document_id: UUID
+    page_number: int
+    chunk_number: int
+    chunk_sha256: str
+    start_offset: int
+    end_offset: int
+    excerpt: str
+    reason: str
+    rank: int
+    provider: str
+    model: str
+    retrieval_version: str
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utc_now)
 
 
 @dataclass(frozen=True, slots=True)

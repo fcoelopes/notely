@@ -13,6 +13,8 @@ from notely.api.schemas import (
     AISuggestionResponse,
     AnnotationCreate,
     AnnotationResponse,
+    CuratedSourceResponse,
+    QuestionSourcesResponse,
     DocumentCreate,
     DocumentResponse,
     ReadingSessionResponse,
@@ -32,6 +34,8 @@ from notely.core.ingestion import (
 )
 from notely.core.models import AISuggestion, Document, StudySession, StudySessionDocument
 from notely.core.services import (
+    CurationNotFoundError,
+    CurationRetryConflictError,
     DocumentConflictError,
     DocumentNotFoundError,
     NotelyService,
@@ -282,9 +286,14 @@ def create_app(
                 position=body.position,
                 source=body.source,
                 reading_session_id=body.reading_session_id,
+                study_session_id=body.study_session_id,
             )
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found") from exc
+        except StudySessionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="study session not found") from exc
+        except SessionDocumentNotFoundError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ReadingSessionNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="reading session not found"
@@ -309,6 +318,62 @@ def create_app(
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found") from exc
         return [AnnotationResponse.model_validate(item) for item in annotations]
+
+    @app.get(
+        "/api/study-sessions/{session_id}/questions/{annotation_id}/sources",
+        response_model=QuestionSourcesResponse,
+    )
+    async def get_question_sources(
+        session_id: UUID, annotation_id: UUID,
+        service: NotelyService = Depends(get_service),
+    ) -> QuestionSourcesResponse:
+        try:
+            view = await service.get_question_sources(
+                session_id=session_id, annotation_id=annotation_id
+            )
+        except (StudySessionNotFoundError, CurationNotFoundError) as exc:
+            raise HTTPException(status_code=404, detail="question sources not found") from exc
+        return QuestionSourcesResponse(
+            annotation_id=annotation_id,
+            study_session_id=session_id,
+            status=view.request.status,
+            version=view.request.version,
+            last_error=view.request.last_error,
+            sources=[CuratedSourceResponse(
+                id=item.source.id,
+                document_id=item.source.document_id,
+                document_title=item.document_title,
+                page_number=item.source.page_number,
+                excerpt=item.source.excerpt,
+                reason=item.source.reason,
+                rank=item.source.rank,
+                provider=item.source.provider,
+                model=item.source.model,
+                available=item.available,
+            ) for item in view.sources],
+        )
+
+    @app.post(
+        "/api/study-sessions/{session_id}/questions/{annotation_id}/sources/retry",
+        response_model=QuestionSourcesResponse,
+    )
+    async def retry_question_sources(
+        session_id: UUID, annotation_id: UUID,
+        service: NotelyService = Depends(get_service),
+    ) -> QuestionSourcesResponse:
+        try:
+            request = await service.retry_question_curation(
+                session_id=session_id, annotation_id=annotation_id
+            )
+        except (StudySessionNotFoundError, CurationNotFoundError) as exc:
+            raise HTTPException(status_code=404, detail="question sources not found") from exc
+        except CurationRetryConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return QuestionSourcesResponse(
+            annotation_id=annotation_id, study_session_id=session_id,
+            status=request.status, version=request.version,
+            last_error=None, sources=[],
+        )
 
     @app.post(
         "/api/reading-sessions",

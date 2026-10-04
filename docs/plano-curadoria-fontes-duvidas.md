@@ -99,9 +99,30 @@ O risco principal é uma indicação parecer confiável sem sustento no PDF. A m
 
 ## Progresso da implementação
 
-A primeira etapa foi iniciada: migration `0004_document_corpus` para índice textual
-por página, extrator `pypdf` e worker de outbox para `document.created` com
-backfill dos PDFs existentes. O worker verifica SHA-256 e contagem de páginas,
-registra estados `ready`/`empty`/`failed` e não duplica páginas sob reentrega.
-A busca de candidatos por dúvida, provider de avaliação, pedido de curadoria,
-API de fontes e painel do Reader permanecem nas etapas seguintes deste plano.
+A indexação por página da primeira etapa está implementada. As migrations `0005` e
+`0006` acrescentam chunks com offsets conferíveis, vínculo da dúvida à sessão de
+estudo, pedidos de curadoria e fontes estruturadas. O extrator passou para
+`text-v2-chunks`: após aplicar as migrations, executar o backfill de corpus para
+reconstruir os documentos indexados pela versão anterior. Pedidos aguardam essa
+reindexação em vez de concluir prematuramente como `no_source`.
+
+O caminho inicial de recuperação usa `tsvector` dos chunks e restringe a consulta
+aos documentos vinculados à sessão. A busca considera o texto da dúvida, a citação
+e o contexto próximo da página de origem; candidatos preservam documento, página,
+offsets, texto e hash. O provider padrão é **busca lexical local**, identificado
+como tal no Reader. Ele escolhe apenas IDs de candidatos retornados pelo banco.
+O worker descarta saídas inválidas e confere novamente o vínculo, a versão do
+índice, a página, o hash e o excerto antes de persistir até três fontes.
+
+Criar uma dúvida na sessão grava anotação, pedido e evento
+`question.curation.requested` na mesma transação. O worker publica estados
+`pending`, `ready`, `no_source` e `failed`, faz retry com backoff e não impede que
+a anotação seja usada quando corpus ou provider falham. A API expõe leitura do
+estado e retry, e o Reader mostra as fontes, uma prévia da página e a navegação
+explícita para o documento citado. Fontes de PDFs retirados da sessão aparecem
+como indisponíveis.
+
+A avaliação por modelo configurável, embeddings em pgvector e OCR/multimodal
+para páginas sem texto continuam como próximas melhorias. Resultados do provider
+lexical não são apresentados como inferência de IA. A política de retenção para
+exclusão de fontes será definida antes de oferecer esse comando.

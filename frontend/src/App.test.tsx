@@ -19,6 +19,7 @@ interface CreateAnnotationInput {
   quote: string;
   comment: string | null;
   reading_session_id: string | null;
+  study_session_id: string | null;
 }
 
 const pdfDocument = vi.hoisted(() => ({ props: null as DocumentProps | null }));
@@ -31,6 +32,8 @@ const api = vi.hoisted(() => ({
   createStudySession: vi.fn(),
   detachDocumentFromSession: vi.fn(),
   getStudySession: vi.fn(),
+  getQuestionSources: vi.fn(),
+  retryQuestionSources: vi.fn(),
   listAnnotations: vi.fn(),
   listDocuments: vi.fn(),
   listStudySessions: vi.fn(),
@@ -199,6 +202,10 @@ describe("App", () => {
     api.listDocuments.mockResolvedValue([]);
     api.listStudySessions.mockResolvedValue([]);
     api.listAnnotations.mockResolvedValue([]);
+    api.getQuestionSources.mockResolvedValue({
+      annotation_id: "annotation-1", study_session_id: "session-1",
+      status: "pending", version: 1, last_error: null, sources: [],
+    });
     api.startReadingSession.mockImplementation((input: { document_id: string; page_number: number | null; filename: string | null }) =>
       Promise.resolve({
         id: "reading-1",
@@ -283,6 +290,7 @@ describe("App", () => {
         position: { rects: [], textQuoteSelector: { exact: input.quote }, version: 1 },
         quote: input.quote,
         reading_session_id: input.reading_session_id,
+        study_session_id: input.study_session_id,
         source: "user_selection",
         type: input.type,
         updated_at: "2026-01-01T00:00:00Z",
@@ -303,6 +311,103 @@ describe("App", () => {
     cleanup();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("shows a verified source preview before explicit navigation", async () => {
+    api.listAnnotations.mockResolvedValue([{
+      id: "question-1", document_id: "doc-1", page_number: 1,
+      type: "question", quote: "Trecho", comment: "Como funciona?",
+      position: { version: 1, rects: [], textQuoteSelector: { exact: "Trecho" } },
+      passage_id: "a".repeat(64), passage_id_version: 1,
+      source: "user_selection", author_type: "user",
+      reading_session_id: null, study_session_id: "session-1",
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+    } satisfies Annotation]);
+    api.getQuestionSources.mockResolvedValue({
+      annotation_id: "question-1", study_session_id: "session-1", status: "ready",
+      version: 1, last_error: null,
+      sources: [{
+        id: "source-1", document_id: "doc-2", document_title: "Outra fonte",
+        page_number: 2, excerpt: "Trecho verificável", reason: "Termos em comum",
+        rank: 1, provider: "lexical_search", model: "simple-tsvector-v1", available: true,
+      }],
+    });
+    await startSession({
+      documents: [sessionDocument("doc-1", "Origem", 0), sessionDocument("doc-2", "Outra fonte", 1)],
+      openPanels: false,
+    });
+    await screen.findByText("Como funciona?");
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 1" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Ver fontes/ }));
+    expect(await screen.findByText("Trecho verificável", { exact: false })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { selected: true })).toHaveTextContent("Origem");
+    fireEvent.click(screen.getByRole("button", { name: /Outra fonte · página 2/ }));
+    expect(await screen.findByText("Prévia · página 2")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { selected: true })).toHaveTextContent("Origem");
+    fireEvent.click(screen.getByRole("button", { name: "Abrir no Reader" }));
+    expect(screen.getByRole("tab", { selected: true })).toHaveTextContent("Outra fonte");
+    expect(screen.getByLabelText("Ir para página")).toHaveValue(2);
+
+    fireEvent.click(screen.getByRole("tab", { name: /Origem/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 1" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Ver fontes/ }));
+    const sourceButton = await screen.findByRole("button", { name: /Outra fonte · página 2/ });
+    fireEvent.click(screen.getByLabelText("Remover Outra fonte da sessão"));
+    await waitFor(() => expect(sourceButton).toBeDisabled());
+    expect(screen.getByText("Fonte indisponível nesta sessão")).toBeInTheDocument();
+  });
+
+  it("shows no source distinctly and can request a retry", async () => {
+    api.listAnnotations.mockResolvedValue([{
+      id: "question-2", document_id: "doc-1", page_number: 1,
+      type: "question", quote: "Trecho", comment: "Outra dúvida",
+      position: { version: 1, rects: [], textQuoteSelector: { exact: "Trecho" } },
+      passage_id: "a".repeat(64), passage_id_version: 1,
+      source: "user_selection", author_type: "user", reading_session_id: null,
+      study_session_id: "session-1", created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    } satisfies Annotation]);
+    api.getQuestionSources.mockImplementation(() => Promise.resolve({
+      annotation_id: "question-2", study_session_id: "session-1",
+      status: api.retryQuestionSources.mock.calls.length ? "pending" : "no_source",
+      version: api.retryQuestionSources.mock.calls.length ? 2 : 1,
+      last_error: null, sources: [],
+    }));
+    api.retryQuestionSources.mockResolvedValue({
+      annotation_id: "question-2", study_session_id: "session-1",
+      status: "pending", version: 2, last_error: null, sources: [],
+    });
+    await startSession({ documents: [sessionDocument("doc-1", "Origem", 0)], openPanels: false });
+    await screen.findByText("Outra dúvida");
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 1" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Ver fontes/ }));
+    expect(await screen.findByText("Nenhuma fonte útil encontrada nesta sessão.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Tentar novamente" }));
+    await waitFor(() => expect(api.retryQuestionSources).toHaveBeenCalledWith("session-1", "question-2"));
+    expect(await screen.findByText("Procurando fontes nesta sessão…")).toBeInTheDocument();
+  });
+
+  it("keeps the question visible when curation fails", async () => {
+    api.listAnnotations.mockResolvedValue([{
+      id: "question-failed", document_id: "doc-1", page_number: 1,
+      type: "question", quote: "Trecho", comment: "Dúvida preservada",
+      position: { version: 1, rects: [], textQuoteSelector: { exact: "Trecho" } },
+      passage_id: "a".repeat(64), passage_id_version: 1,
+      source: "user_selection", author_type: "user", reading_session_id: null,
+      study_session_id: "session-1", created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    } satisfies Annotation]);
+    api.getQuestionSources.mockResolvedValue({
+      annotation_id: "question-failed", study_session_id: "session-1",
+      status: "failed", version: 1, last_error: "Provider indisponível", sources: [],
+    });
+    await startSession({ documents: [sessionDocument("doc-1", "Origem", 0)], openPanels: false });
+    await screen.findByText("Dúvida preservada");
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 1" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Ver fontes/ }));
+    expect(await screen.findByText("Curadoria indisponível. Sua dúvida continua salva.")).toBeInTheDocument();
+    expect(screen.getByText("Dúvida preservada")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tentar novamente" })).toBeInTheDocument();
   });
 
   it("starts a study session with the theme the user wrote", async () => {

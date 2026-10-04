@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 from uuid import UUID
 
@@ -10,6 +11,8 @@ from notely.core.models import (
     Annotation,
     AnnotationSource,
     AnnotationType,
+    CurationRequest,
+    CurationStatus,
     Document,
     OutboxEvent,
     ReadingSession,
@@ -19,6 +22,7 @@ from notely.core.models import (
     ThemeOrigin,
     utc_now,
 )
+from notely.core.curation import CurationView, CuratedSourceView
 from notely.core.passage import anchor_from_position, passage_id
 from notely.core.ports import UnitOfWork
 from notely.providers.topic import TopicSuggestionContext, TopicSuggestionProvider
@@ -55,6 +59,14 @@ class SessionDocumentConflictError(Exception):
 
 
 class SessionDocumentNotFoundError(Exception):
+    pass
+
+
+class CurationNotFoundError(Exception):
+    pass
+
+
+class CurationRetryConflictError(Exception):
     pass
 
 
@@ -131,6 +143,7 @@ class NotelyService:
         comment: str | None = None,
         source: AnnotationSource = AnnotationSource.USER_SELECTION,
         reading_session_id: UUID | None = None,
+        study_session_id: UUID | None = None,
     ) -> Annotation:
         async with self._uow_factory() as uow:
             document = await uow.get_document(document_id)
@@ -150,6 +163,14 @@ class NotelyService:
                         "a reading session belongs to a single document"
                     )
 
+            if study_session_id is not None:
+                if annotation_type is AnnotationType.QUESTION and not (comment or "").strip():
+                    raise ValueError("question text is required for source curation")
+                if await uow.get_study_session(study_session_id) is None:
+                    raise StudySessionNotFoundError(str(study_session_id))
+                if await uow.get_study_session_document(study_session_id, document_id) is None:
+                    raise SessionDocumentNotFoundError("document is not in this study session")
+
             exact, prefix, suffix = anchor_from_position(position)
             annotation = Annotation(
                 document_id=document_id,
@@ -160,6 +181,7 @@ class NotelyService:
                 position=position,
                 source=source,
                 reading_session_id=reading_session_id,
+                study_session_id=study_session_id,
                 passage_id=passage_id(
                     document_sha256=document.sha256,
                     page_number=page_number,
@@ -190,8 +212,64 @@ class NotelyService:
                     },
                 )
             )
+            if annotation_type is AnnotationType.QUESTION and study_session_id is not None:
+                request = CurationRequest(
+                    annotation_id=annotation.id, study_session_id=study_session_id
+                )
+                await uow.add_curation_request(request)
+                await uow.add_outbox_event(_curation_event(request))
             await uow.commit()
         return annotation
+
+    async def get_question_sources(
+        self, *, session_id: UUID, annotation_id: UUID
+    ) -> CurationView:
+        async with self._uow_factory() as uow:
+            if await uow.get_study_session(session_id) is None:
+                raise StudySessionNotFoundError(str(session_id))
+            annotation = await uow.get_annotation(annotation_id)
+            request = await uow.get_curation_request(annotation_id)
+            if (
+                annotation is None or annotation.type is not AnnotationType.QUESTION
+                or annotation.study_session_id != session_id or request is None
+                or request.study_session_id != session_id
+            ):
+                raise CurationNotFoundError(str(annotation_id))
+            sources: list[CuratedSourceView] = []
+            if request.status is CurationStatus.READY:
+                for source in await uow.list_curated_sources(request.id):
+                    document = await uow.get_document(source.document_id)
+                    sources.append(CuratedSourceView(
+                        source=source,
+                        document_title=document.title if document else "Documento indisponível",
+                        available=await uow.source_is_current(source, session_id),
+                    ))
+            return CurationView(request=request, sources=sources)
+
+    async def retry_question_curation(
+        self, *, session_id: UUID, annotation_id: UUID
+    ) -> CurationRequest:
+        async with self._uow_factory() as uow:
+            if await uow.get_study_session(session_id) is None:
+                raise StudySessionNotFoundError(str(session_id))
+            annotation = await uow.get_annotation(annotation_id)
+            request = await uow.get_curation_request(annotation_id)
+            if (
+                annotation is None or annotation.type is not AnnotationType.QUESTION
+                or annotation.study_session_id != session_id or request is None
+                or request.study_session_id != session_id
+            ):
+                raise CurationNotFoundError(str(annotation_id))
+            if request.status not in {CurationStatus.FAILED, CurationStatus.NO_SOURCE}:
+                raise CurationRetryConflictError("curation is already pending or ready")
+            updated = replace(
+                request, version=request.version + 1, status=CurationStatus.PENDING,
+                attempt_count=0, last_error=None, updated_at=utc_now(), completed_at=None,
+            )
+            await uow.update_curation_request(updated)
+            await uow.add_outbox_event(_curation_event(updated))
+            await uow.commit()
+            return updated
 
     async def start_reading_session(
         self,
@@ -629,3 +707,17 @@ async def _pending_suggestion(
             f"suggestion {suggestion_id} is already {suggestion.status.value}"
         )
     return suggestion
+
+
+def _curation_event(request: CurationRequest) -> OutboxEvent:
+    return OutboxEvent(
+        aggregate_type="question_curation", aggregate_id=request.id,
+        event_type="question.curation.requested",
+        event_key=f"question-curation:{request.annotation_id}:{request.version}",
+        payload={
+            "request_id": str(request.id),
+            "annotation_id": str(request.annotation_id),
+            "study_session_id": str(request.study_session_id),
+            "version": request.version,
+        },
+    )

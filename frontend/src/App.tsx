@@ -420,6 +420,7 @@ function App() {
           quote: selection.quote,
           comment,
           reading_session_id: reading.sessionId,
+          study_session_id: session?.id ?? null,
           position: {
             version: 1,
             rects: selection.rects,
@@ -440,7 +441,7 @@ function App() {
         setSaving(false);
       }
     },
-    [activeDocumentId, reading, selection],
+    [activeDocumentId, reading, selection, session?.id],
   );
 
   const chooseAnnotationType = useCallback(
@@ -662,6 +663,13 @@ function App() {
           </details>
           <AnnotationPanel
             annotations={activeAnnotations}
+            sessionId={session.id}
+            availableDocumentIds={session.documents.map((item) => item.document_id)}
+            onGoToSource={(documentId, page) => {
+              setActiveDocumentId(documentId);
+              setPageByDocument((current) => ({ ...current, [documentId]: page }));
+              setSidebarOpen(false);
+            }}
             onGoToPage={(page) => {
               if (!activeDocumentId) return;
               setPageByDocument((current) => ({ ...current, [activeDocumentId]: page }));

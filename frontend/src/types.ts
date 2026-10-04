@@ -32,6 +32,7 @@ export interface Annotation {
   source: "user_selection" | "native_pdf" | "import";
   author_type: "user";
   reading_session_id: string | null;
+  study_session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -115,3 +116,25 @@ export interface SelectionDraft {
   toolbarY: number;
 }
 
+
+export interface CuratedSource {
+  id: string;
+  document_id: string;
+  document_title: string;
+  page_number: number;
+  excerpt: string;
+  reason: string;
+  rank: number;
+  provider: string;
+  model: string;
+  available: boolean;
+}
+
+export interface QuestionSources {
+  annotation_id: string;
+  study_session_id: string;
+  status: "pending" | "ready" | "no_source" | "failed";
+  version: number;
+  last_error: string | null;
+  sources: CuratedSource[];
+}

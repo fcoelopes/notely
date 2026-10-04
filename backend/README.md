@@ -19,6 +19,22 @@ uv run --project backend uvicorn notely.api.app:app --reload
 
 O PostgreSQL do ambiente local é a imagem `timescale/timescaledb` com `shared_preload_libraries=timescaledb`: a trilha temporal de leitura vive em TimescaleDB, e a migration falha de forma explícita se a extensão não estiver disponível.
 
+### Atualizar um banco local existente
+
+O loop de migrations acima serve para um banco **novo**. Os arquivos SQL não podem ser reaplicados sobre tabelas existentes. Ao atualizar o código, faça backup e aplique **somente as migrations ausentes**, em ordem. Para conferir as etapas recentes:
+
+```bash
+docker compose exec -T postgres psql -U notely -d notely -c "select to_regclass('public.document_corpus_index') as m0004, to_regclass('public.document_corpus_chunks') as m0005, to_regclass('public.question_curation_requests') as m0006, to_regclass('public.study_session_viewed_pages') as m0007"
+docker compose exec -T postgres pg_dump -Fc -U notely notely > ../notely-backup.dump
+# Exemplo: se 0004 a 0007 estiverem ausentes:
+for number in 0004 0005 0006 0007; do
+  migration=$(find infra/db/migrations -name "${number}_*.up.sql" -print -quit)
+  docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U notely -d notely < "$migration"
+done
+```
+
+Sem a migration `0006`, a API falha ao salvar destaques e dúvidas porque a coluna `annotations.study_session_id` não existe; consequentemente, nenhum pedido de curadoria é criado. Após as migrations, inicie os workers de corpus e curadoria em terminais separados. Sem eles, a dúvida pode ser salva, mas a busca de fontes permanece pendente. Use `--backfill --once` no worker de corpus para indexar PDFs já enviados.
+
 O primeiro build do MinIO compila a release fixada em [`infra/minio/Dockerfile`](../infra/minio/Dockerfile) e pode demorar. A console local fica em `http://localhost:9001`.
 
 Configurações e credenciais de desenvolvimento estão em [`.env.example`](.env.example). Não as reutilize em produção.

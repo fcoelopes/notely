@@ -1,6 +1,6 @@
 # Plano: curadoria de fontes para dúvidas em sessões de estudo
 
-**Estado:** implementação em andamento
+**Estado:** entrega principal concluída; ampliações futuras identificadas
 
 **Issue:** [#2 — Curadoria de fontes para dúvidas nas sessões de estudo](https://github.com/fcoelopes/notely/issues/2)
 
@@ -122,7 +122,9 @@ estado e retry, e o Reader mostra as fontes, uma prévia da página e a navegaç
 explícita para o documento citado. Fontes de PDFs retirados da sessão aparecem
 como indisponíveis.
 
-A avaliação por modelo configurável, embeddings em pgvector e OCR/multimodal
-para páginas sem texto continuam como próximas melhorias. Resultados do provider
-lexical não são apresentados como inferência de IA. A política de retenção para
-exclusão de fontes será definida antes de oferecer esse comando.
+A entrega principal da issue #2 cobre a indicação verificável de fontes da própria
+sessão, o processamento assíncrono e os estados do Reader. A avaliação por modelo
+configurável, embeddings em pgvector e OCR/multimodal para páginas sem texto
+permanecem como ampliações futuras, com escopo e validação próprios. Resultados
+do provider lexical não são apresentados como inferência de IA. A política de
+retenção para exclusão de fontes será definida antes de oferecer esse comando.

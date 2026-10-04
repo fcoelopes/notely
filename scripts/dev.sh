@@ -10,7 +10,7 @@ if [[ $# -gt 1 || ( $# -eq 1 && "${1}" != "--migrate-only" ) ]]; then
 fi
 mode=${1:-start}
 
-for executable in docker python3; do
+for executable in docker python3 uv; do
   command -v "$executable" > /dev/null || { printf 'Comando necessário ausente: %s\n' "$executable" >&2; exit 1; }
 done
 
@@ -22,7 +22,7 @@ fi
 export NOTELY_DATABASE_URL="$local_database_url"
 
 if [[ "$mode" == start ]]; then
-  for executable in uv npm; do
+  for executable in npm; do
     command -v "$executable" > /dev/null || { printf 'Comando necessário ausente: %s\n' "$executable" >&2; exit 1; }
   done
   python3 - <<'PY'
@@ -43,13 +43,13 @@ if [[ "$mode" == --migrate-only ]]; then
 else
   docker compose up -d --wait postgres minio clamav
 fi
-python3 scripts/migrate.py
+uv sync --project backend --dev --frozen
+backend/.venv/bin/python scripts/migrate.py
 
 if [[ "$mode" == --migrate-only ]]; then
   exit 0
 fi
 
-uv sync --project backend --dev --frozen
 if [[ ! -x frontend/node_modules/.bin/vite ]]; then
   npm --prefix frontend ci
 fi

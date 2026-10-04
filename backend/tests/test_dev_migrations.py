@@ -1,8 +1,9 @@
-"""O iniciador só aplica migrations ausentes e interrompe esquemas parciais."""
+"""Alembic upgrades fresh and legacy databases without altering partial schemas."""
 
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import subprocess
 import sys
 from uuid import uuid4
@@ -46,15 +47,14 @@ def migrate(name: str, backup_dir: Path) -> subprocess.CompletedProcess[str]:
 def test_new_database_is_migrated_once(database: str, tmp_path: Path) -> None:
     first = migrate(database, tmp_path)
     assert first.returncode == 0, first.stderr
-    assert "0007_reading_progress: applying" in first.stdout
+    assert "Alembic revision 0007: current" in first.stdout
     second = migrate(database, tmp_path)
     assert second.returncode == 0, second.stderr
-    assert "0001_initial: already applied" in second.stdout
-    assert "0007_reading_progress: already applied" in second.stdout
-    assert "applying" not in second.stdout
+    assert "Alembic revision 0007: current" in second.stdout
+    assert list(tmp_path.glob("*.dump")) == []
     result = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
-                    "select to_regclass('study_session_viewed_pages') is not null")
-    assert result.stdout.strip() == "t"
+                    "select version_num from alembic_version")
+    assert result.stdout.strip() == "0007"
 
 
 def test_existing_database_receives_only_missing_migrations(database: str, tmp_path: Path) -> None:
@@ -62,12 +62,46 @@ def test_existing_database_receives_only_missing_migrations(database: str, tmp_p
         applied = docker("psql", "-v", "ON_ERROR_STOP=1", "-U", "notely", "-d", database,
                          input=path.read_text())
         assert applied.returncode == 0, applied.stderr
+    document_id = str(uuid4())
+    inserted = docker("psql", "-v", "ON_ERROR_STOP=1", "-U", "notely", "-d", database,
+                      input=("INSERT INTO documents (id, sha256, title, filename, page_count, "
+                             "storage_uri, created_at, updated_at) VALUES "
+                             f"('{document_id}', '{'a' * 64}', 'Preserve me', 'test.pdf', 1, "
+                             "'test://pdf', now(), now());"))
+    assert inserted.returncode == 0, inserted.stderr
     result = migrate(database, tmp_path)
     assert result.returncode == 0, result.stderr
-    assert "0003_reading_sessions_and_reader_events: already applied" in result.stdout
-    assert "0004_document_corpus: applying" in result.stdout
-    assert "0007_reading_progress: applying" in result.stdout
+    assert "Legacy schema registered at Alembic revision 0003" in result.stdout
+    assert "Alembic revision 0007: current" in result.stdout
     assert len(list(tmp_path.glob("*.dump"))) == 1
+    version = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
+                     "select version_num from alembic_version")
+    assert version.stdout.strip() == "0007"
+    preserved = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
+                       f"select title from documents where id = '{document_id}'")
+    assert preserved.stdout.strip() == "Preserve me"
+
+
+def test_alembic_downgrade_and_upgrade(database: str, tmp_path: Path) -> None:
+    assert migrate(database, tmp_path).returncode == 0
+    environment = os.environ | {
+        "NOTELY_DATABASE_URL": f"postgresql+asyncpg://notely:notely@localhost:5432/{database}"
+    }
+    downgraded = subprocess.run(
+        [str(ROOT / "backend" / ".venv" / "bin" / "alembic"), "-c", "alembic.ini",
+         "downgrade", "0006"],
+        text=True, capture_output=True, cwd=ROOT, env=environment, check=False,
+    )
+    assert downgraded.returncode == 0, downgraded.stderr
+    missing = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
+                     "select to_regclass('study_session_viewed_pages') is null")
+    assert missing.stdout.strip() == "t"
+    upgraded = migrate(database, tmp_path)
+    assert upgraded.returncode == 0, upgraded.stderr
+    assert len(list(tmp_path.glob("*.dump"))) == 1
+    restored = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
+                      "select version_num from alembic_version")
+    assert restored.stdout.strip() == "0007"
 
 
 def test_partial_schema_is_not_modified(database: str, tmp_path: Path) -> None:

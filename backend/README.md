@@ -12,7 +12,7 @@ Na raiz do repositório:
 ./scripts/dev.sh
 ```
 
-O comando sobe PostgreSQL, MinIO e ClamAV, aplica apenas as migrations ausentes, prepara as dependências e inicia API, Reader e os três workers (TimescaleDB, corpus e curadoria). Use `Ctrl+C` para encerrar os processos da aplicação; os contêineres continuam ativos. Se a API ou o Reader já ocupam as portas locais, encerre a instância anterior antes de iniciar outra.
+O comando sobe PostgreSQL, MinIO e ClamAV, sincroniza as dependências, aplica as revisões pendentes com Alembic e inicia API, Reader e os três workers (TimescaleDB, corpus e curadoria). Use `Ctrl+C` para encerrar os processos da aplicação; os contêineres continuam ativos. Se a API ou o Reader já ocupam as portas locais, encerre a instância anterior antes de iniciar outra.
 
 Para aplicar migrations sem iniciar outra instância da aplicação:
 
@@ -24,7 +24,17 @@ O PostgreSQL do ambiente local é a imagem `timescale/timescaledb` com `shared_p
 
 ### Atualizar um banco local existente
 
-`./scripts/dev.sh` verifica os objetos criados por cada migration, aplica apenas o trecho pendente da sequência e recusa um esquema parcial ou com lacunas. Antes de alterar um banco que já contém migrations antigas, salva e verifica um backup em `.local/backups/`, ignorado pelo Git. Para uma atualização sem reiniciar os servidores, use `./scripts/dev.sh --migrate-only`. Ao adicionar uma migration nova, atualize os marcadores em `scripts/migrate.py`; se o arquivo e os marcadores divergirem, o startup falha sem alterar o banco.
+As revisões Alembic ficam em `infra/db/migrations/versions/`. Os arquivos SQL `0001` a `0007` são preservados e executados pelas revisões correspondentes. Na primeira execução sobre um banco anterior ao Alembic, `./scripts/dev.sh` confere os objetos dessas sete migrations, recusa esquemas parciais ou com lacunas, verifica um backup em `.local/backups/` e registra a última revisão aplicada. Depois usa `alembic upgrade head`. Um banco já versionado recebe backup antes de qualquer upgrade pendente. Os marcadores em `scripts/migrate.py` servem somente para reconhecer os sete esquemas legados; revisões novas não precisam deles.
+
+Para inspecionar o estado ou criar uma revisão manual, na raiz do repositório:
+
+```bash
+backend/.venv/bin/alembic -c alembic.ini current
+backend/.venv/bin/alembic -c alembic.ini history
+backend/.venv/bin/alembic -c alembic.ini revision -m "descricao da mudanca"
+```
+
+Edite `upgrade()` e `downgrade()` da revisão gerada antes de aplicá-la. O Alembic lê `NOTELY_DATABASE_URL` para comandos diretos; o script de desenvolvimento fixa o banco Docker local. Para atualizar sem iniciar outra instância, use `./scripts/dev.sh --migrate-only`.
 
 Sem a migration `0006`, a API falha ao salvar destaques e dúvidas porque falta `annotations.study_session_id`. Os workers de corpus e curadoria são iniciados junto com a aplicação; sem eles, dúvidas salvas ficam pendentes. O worker de corpus também enfileira PDFs antigos sem índice ao iniciar.
 
@@ -71,9 +81,7 @@ as migrations aplicadas e são pulados quando ele não existe:
 
 ```bash
 docker compose exec -T postgres psql -U notely -d postgres -c "create database notely_test owner notely"
-for migration in infra/db/migrations/*.up.sql; do
-  docker compose exec -T postgres psql -q -v ON_ERROR_STOP=1 -U notely -d notely_test < "$migration"
-done
+backend/.venv/bin/python scripts/migrate.py --database notely_test
 ```
 
 Use `NOTELY_TEST_DATABASE_URL` para apontar para outro banco. Cada teste limpa as tabelas do

@@ -14,7 +14,7 @@ O projeto nasce para resolver um problema comum: depois de meses ou anos lendo P
 ./scripts/dev.sh
 ```
 
-O script aplica as migrations pendentes antes de iniciar a API, o Reader e os workers. Consulte [as instruções do backend](backend/README.md) para requisitos, atualização de um banco existente e comandos de teste.
+O script aplica as revisões pendentes com Alembic antes de iniciar a API, o Reader e os workers. Consulte [as instruções do backend](backend/README.md) para requisitos, atualização de um banco existente e comandos de teste.
 
 ## Visão do produto
 

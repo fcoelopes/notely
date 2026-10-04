@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Apply missing local PostgreSQL migrations after checking their schema markers.
-
-The repository predates a migration ledger. Existing databases are identified by
-objects created by each transactional migration; a partial or gapped schema stops
-startup instead of risking duplicate DDL or overwriting user data.
-"""
+"""Upgrade the local database with Alembic, adopting pre-Alembic schemas safely."""
 
 from __future__ import annotations
 
@@ -17,9 +12,12 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = Path(__file__).resolve().parents[1]
-MIGRATIONS = ROOT / "infra" / "db" / "migrations"
+from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from alembic.script.revision import ResolutionError
 
+ROOT = Path(__file__).resolve().parents[1]
 
 def table(name: str) -> str:
     return f"to_regclass('public.{name}') IS NOT NULL"
@@ -91,17 +89,6 @@ def marker_state(database: str, version: str) -> str:
     return "partial"
 
 
-def migration_files() -> list[tuple[str, Path]]:
-    files = sorted(MIGRATIONS.glob("*.up.sql"))
-    versions = [path.name.removesuffix(".up.sql") for path in files]
-    if not files or set(versions) != set(MARKERS):
-        raise RuntimeError("Migration files and schema markers differ; update MARKERS before starting")
-    numbers = [int(version.split("_", 1)[0]) for version in versions]
-    if numbers != list(range(1, len(numbers) + 1)):
-        raise RuntimeError("Migration sequence must be contiguous from 0001")
-    return list(zip(versions, files, strict=True))
-
-
 def backup(database: str, backup_dir: Path) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(backup_dir, 0o700)
@@ -134,33 +121,44 @@ def backup(database: str, backup_dir: Path) -> Path:
 
 
 def migrate(database: str, backup_dir: Path) -> None:
-    files = migration_files()
-    states = [(version, path, marker_state(database, version)) for version, path in files]
-    for version, _, state in states:
-        if state == "partial":
-            raise RuntimeError(f"Migration {version} has a partial schema; inspect it before continuing")
-    missing_seen = False
-    for version, _, state in states:
-        if state == "missing":
-            missing_seen = True
-        elif missing_seen:
-            raise RuntimeError(f"Migration {version} is applied after a missing migration; inspect schema")
-
-    if any(state == "missing" for _, _, state in states) and any(
-        state == "applied" for _, _, state in states
-    ):
+    config = Config(str(ROOT / "alembic.ini"))
+    config.attributes["database_url"] = f"postgresql+asyncpg://notely:notely@localhost:5432/{database}"
+    script = ScriptDirectory.from_config(config)
+    head = script.get_current_head()
+    if psql(database, "SELECT to_regclass('public.alembic_version') IS NOT NULL;") == "t":
+        current = psql(database, "SELECT version_num FROM alembic_version;")
+        try:
+            revision = script.get_revision(current) if current else None
+        except ResolutionError as exc:
+            raise RuntimeError(f"Unknown Alembic revision: {current}") from exc
+        if revision is None:
+            raise RuntimeError(f"Unknown Alembic revision: {current or '(empty)'}")
+        if current == head:
+            print(f"Alembic revision {head}: current", flush=True)
+            return
         saved = backup(database, backup_dir)
         print(f"Backup verified: {saved}", flush=True)
+    else:
+        states = [(version, marker_state(database, version)) for version in MARKERS]
+        for version, state in states:
+            if state == "partial":
+                raise RuntimeError(f"Migration {version} has a partial schema; inspect it before continuing")
+        missing_seen = False
+        for version, state in states:
+            if state == "missing":
+                missing_seen = True
+            elif missing_seen:
+                raise RuntimeError(f"Migration {version} is applied after a missing migration; inspect schema")
+        applied = [version for version, state in states if state == "applied"]
+        if applied:
+            saved = backup(database, backup_dir)
+            print(f"Backup verified: {saved}", flush=True)
+            revision = applied[-1].split("_", 1)[0]
+            command.stamp(config, revision)
+            print(f"Legacy schema registered at Alembic revision {revision}", flush=True)
 
-    for version, path, state in states:
-        if state == "applied":
-            print(f"{version}: already applied", flush=True)
-            continue
-        print(f"{version}: applying", flush=True)
-        psql(database, path.read_text())
-        if marker_state(database, version) != "applied":
-            raise RuntimeError(f"Migration {version} finished without all expected objects")
-    print("Migrations are current", flush=True)
+    command.upgrade(config, "head")
+    print(f"Alembic revision {head}: current", flush=True)
 
 
 def main() -> int:

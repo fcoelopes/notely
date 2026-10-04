@@ -8,6 +8,14 @@ A proposta é simples: **você continua sendo responsável pela leitura e por de
 
 O projeto nasce para resolver um problema comum: depois de meses ou anos lendo PDFs, os destaques, dúvidas e comentários ficam espalhados entre arquivos, leitores diferentes e anotações difíceis de recuperar. O Notely pretende transformar cada interação de leitura em conhecimento estruturado, sem tirar o usuário do fluxo.
 
+## Executar localmente
+
+```bash
+./scripts/dev.sh
+```
+
+O script aplica as migrations pendentes antes de iniciar a API, o Reader e os workers. Consulte [as instruções do backend](backend/README.md) para requisitos, atualização de um banco existente e comandos de teste.
+
 ## Visão do produto
 
 O fluxo principal será:

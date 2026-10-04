@@ -55,7 +55,7 @@ PostgreSQL é a fonte de verdade do progresso. TimescaleDB continua responsável
 
 ## Riscos e rollback
 
-O percentual pode ser interpretado como compreensão. A UI explicita que mede páginas visualizadas. Uma página renderizada rapidamente pode ser contada sem leitura atenta; isso é uma limitação deliberada deste primeiro indicador. Para rollback operacional, ocultar indicadores e interromper a chamada de registro; manter a tabela até decidir retenção. A migration `down` remove os registros somente após backup quando aplicada fora de um banco descartável.
+O percentual pode ser interpretado como compreensão. A UI explicita que mede páginas visualizadas. Uma página renderizada rapidamente pode ser contada sem leitura atenta; isso é uma limitação deliberada deste primeiro indicador. Para rollback operacional, ocultar indicadores e interromper a chamada de registro; manter a tabela até decidir retenção. O rollback operacional deve manter a tabela quando houver páginas registradas. A política Alembic agora bloqueia o `down` de `0007` nesse caso; veja [o plano da issue #5](rollback-seguro-alembic.md) e [o procedimento operacional](../docs/rollback.md).
 
 ## Validação da implementação
 

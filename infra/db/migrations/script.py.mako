@@ -8,6 +8,8 @@ Create Date: ${create_date}
 from alembic import op
 import sqlalchemy as sa
 
+from rollback_policy import protect_downgrade
+
 revision = ${repr(up_revision)}
 down_revision = ${repr(down_revision)}
 branch_labels = ${repr(branch_labels)}
@@ -19,4 +21,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    protect_downgrade(revision)
     pass

@@ -4,19 +4,40 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
-if [[ $# -gt 1 || ( $# -eq 1 && "${1}" != "--migrate-only" ) ]]; then
-  printf 'Uso: %s [--migrate-only]\n' "$0" >&2
+mode=start
+database=notely
+while (( $# > 0 )); do
+  case "$1" in
+    --migrate-only)
+      mode=--migrate-only
+      shift
+      ;;
+    --database)
+      if (( $# < 2 )); then
+        printf 'Uso: %s [--migrate-only] [--database NOME]\n' "$0" >&2
+        exit 2
+      fi
+      database=$2
+      shift 2
+      ;;
+    *)
+      printf 'Uso: %s [--migrate-only] [--database NOME]\n' "$0" >&2
+      exit 2
+      ;;
+  esac
+done
+if [[ ! "$database" =~ ^[A-Za-z_][A-Za-z_0-9]*$ ]]; then
+  printf 'Nome de banco inválido: %s\n' "$database" >&2
   exit 2
 fi
-mode=${1:-start}
 
 for executable in docker python3 uv; do
   command -v "$executable" > /dev/null || { printf 'Comando necessário ausente: %s\n' "$executable" >&2; exit 1; }
 done
 
-local_database_url='postgresql+asyncpg://notely:notely@localhost:5432/notely'
+local_database_url="postgresql+asyncpg://notely:notely@localhost:5432/$database"
 if [[ -n "${NOTELY_DATABASE_URL:-}" && "$NOTELY_DATABASE_URL" != "$local_database_url" ]]; then
-  printf 'Este script usa o banco Docker local notely; NOTELY_DATABASE_URL aponta para outro banco.\n' >&2
+  printf 'Este script usa o banco Docker local selecionado; NOTELY_DATABASE_URL aponta para outro banco.\n' >&2
   exit 1
 fi
 export NOTELY_DATABASE_URL="$local_database_url"
@@ -44,7 +65,7 @@ else
   docker compose up -d --wait postgres minio clamav
 fi
 uv sync --project backend --dev --frozen
-backend/.venv/bin/python scripts/migrate.py
+backend/.venv/bin/python scripts/migrate.py --database "$database"
 
 if [[ "$mode" == --migrate-only ]]; then
   exit 0

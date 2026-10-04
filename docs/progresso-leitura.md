@@ -11,4 +11,4 @@ O indicador mostra **páginas visualizadas**, não compreensão, tempo de estudo
 
 A API expõe `GET /api/reading-progress` para a biblioteca e o Reader e `PUT /api/study-sessions/{session_id}/documents/{document_id}/viewed-pages/{page_number}` para registrar a página. O `PUT` exige sessão e documento existentes, vínculo atual e página dentro de `1..page_count`; pode ser repetido sem aumentar a contagem. A resposta contém progresso da sessão e do arquivo na biblioteca. O Reader continua utilizável se essa API falhar.
 
-A migration `0007_reading_progress.up.sql` cria a tabela e o índice para agregação global. A migration `down` remove a tabela e seus dados; em produção, preserve os dados antes de reverter.
+A migration `0007_reading_progress.up.sql` cria a tabela e o índice para agregação global. A revisão `down` é bloqueada quando existem páginas visualizadas, para preservar o progresso. Veja [o procedimento de rollback](rollback.md).

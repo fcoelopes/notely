@@ -34,7 +34,7 @@ backend/.venv/bin/alembic -c alembic.ini history
 backend/.venv/bin/alembic -c alembic.ini revision -m "descricao da mudanca"
 ```
 
-Edite `upgrade()` e `downgrade()` da revisão gerada antes de aplicá-la. O Alembic lê `NOTELY_DATABASE_URL` para comandos diretos; o script de desenvolvimento fixa o banco Docker local. Para atualizar sem iniciar outra instância, use `./scripts/dev.sh --migrate-only`.
+Edite `upgrade()` e `downgrade()` da revisão gerada antes de aplicá-la e registre sua política de rollback. O Alembic lê `NOTELY_DATABASE_URL` para comandos diretos; o script de desenvolvimento usa o banco Docker local. Para atualizar sem iniciar outra instância, use `./scripts/dev.sh --migrate-only`. Para recuperar um banco local restaurado, use `./scripts/dev.sh --database NOME`. O procedimento de prévia, rollback e restauração está em [docs/rollback.md](../docs/rollback.md).
 
 Sem a migration `0006`, a API falha ao salvar destaques e dúvidas porque falta `annotations.study_session_id`. Os workers de corpus e curadoria são iniciados junto com a aplicação; sem eles, dúvidas salvas ficam pendentes. O worker de corpus também enfileira PDFs antigos sem índice ao iniciar.
 

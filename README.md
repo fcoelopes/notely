@@ -78,6 +78,7 @@ Ler sobre um tema normalmente significa ler vários arquivos. O Notely reúne es
 - as anotações continuam vinculadas ao documento de origem, preservando a proveniência;
 - o usuário pode pedir uma **sugestão de tema**, gerada a partir dos títulos e das anotações da sessão. A sugestão fica pendente, mostra provider e modelo, e só entra na sessão quando o usuário aceita; editá-la depois devolve a autoria ao usuário;
 - sessões abertas e documentos já ingeridos ficam disponíveis para retomar a leitura, com o PDF servido pela API a partir do armazenamento de objetos.
+- o Reader e a biblioteca mostram o progresso de páginas visualizadas por arquivo e por sessão, conforme [a regra de cálculo](docs/progresso-leitura.md).
 
 ## Reader-first, não reader-only
 

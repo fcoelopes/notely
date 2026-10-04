@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
@@ -80,6 +81,18 @@ class UnitOfWork(Protocol):
     async def remove_study_session_document(self, session_id: UUID, document_id: UUID) -> None: ...
 
     async def next_study_session_position(self, session_id: UUID) -> int: ...
+
+    async def add_viewed_page(
+        self, session_id: UUID, document_id: UUID, page_number: int, first_viewed_at: datetime
+    ) -> None: ...
+
+    async def list_session_document_page_counts(
+        self, session_id: UUID | None = None
+    ) -> list[tuple[UUID, UUID, int, int]]: ...
+
+    async def list_global_document_page_counts(
+        self, document_id: UUID | None = None
+    ) -> list[tuple[UUID, int, int]]: ...
 
     async def add_ai_suggestion(self, suggestion: AISuggestion) -> None: ...
 

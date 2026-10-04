@@ -5,14 +5,21 @@ import type { DocumentSummary, StudySession } from "../types";
 
 const sessions = [{ id: "s1", theme: "Recuperação de informação", theme_origin: "user" }] as StudySession[];
 const documents = [{ id: "d1", title: "Introdução", filename: "artigo.pdf", page_count: 3 }] as DocumentSummary[];
-function setup(busy = false) {
+function setup(busy = false, progress = null as import("../types").ReadingProgressSnapshot | null) {
   const onResumeSession = vi.fn();
   const onStartSession = vi.fn();
-  render(<SessionLibrary documents={documents} sessions={sessions} busy={busy} onResumeSession={onResumeSession} onStartSession={onStartSession} />);
+  render(<SessionLibrary documents={documents} sessions={sessions} busy={busy} progress={progress} onResumeSession={onResumeSession} onStartSession={onStartSession} />);
   return { onResumeSession, onStartSession };
 }
 afterEach(cleanup);
 describe("SessionLibrary", () => {
+  it("shows persisted session and global document percentages with page counts", () => {
+    setup(false, {
+      sessions: { s1: { progress: { viewed_pages: 2, total_pages: 3, percent: 67 }, documents: { d1: { viewed_pages: 2, total_pages: 3, percent: 67 } } } },
+      documents: { d1: { viewed_pages: 2, total_pages: 3, percent: 67 } },
+    });
+    expect(screen.getAllByText("67% · 2/3 páginas visualizadas")).toHaveLength(2);
+  });
   it("filters by theme without accents and reports no results", () => {
     setup();
     fireEvent.change(screen.getByRole("searchbox"), { target: { value: "recuperacao" } });

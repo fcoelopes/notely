@@ -22,7 +22,7 @@ interface CreateAnnotationInput {
   study_session_id: string | null;
 }
 
-const pdfDocument = vi.hoisted(() => ({ props: null as DocumentProps | null }));
+const pdfDocument = vi.hoisted(() => ({ props: null as DocumentProps | null, pageRendered: null as (() => void) | null }));
 const api = vi.hoisted(() => ({
   acceptThemeSuggestion: vi.fn(),
   startReadingSession: vi.fn(),
@@ -32,6 +32,8 @@ const api = vi.hoisted(() => ({
   createStudySession: vi.fn(),
   detachDocumentFromSession: vi.fn(),
   getStudySession: vi.fn(),
+  getReadingProgress: vi.fn(),
+  recordViewedPage: vi.fn(),
   getQuestionSources: vi.fn(),
   retryQuestionSources: vi.fn(),
   listAnnotations: vi.fn(),
@@ -60,11 +62,14 @@ vi.mock("react-pdf", async () => {
       }, [props.file]);
       return <div className="react-pdf__Document">{props.children}</div>;
     },
-    Page: (props: { pageNumber: number }) => (
+    Page: (props: { pageNumber: number; onRenderSuccess?: () => void }) => {
+      pdfDocument.pageRendered = props.onRenderSuccess ?? null;
+      return (
       <div className="react-pdf__Page" data-page-number={props.pageNumber}>
         <span>Trecho selecionável do documento</span>
       </div>
-    ),
+    );
+    },
   };
 });
 
@@ -198,9 +203,16 @@ describe("App", () => {
     Object.values(api).forEach((fn) => fn.mockReset());
     readPageCount.mockReset();
     pdfDocument.props = null;
+    pdfDocument.pageRendered = null;
 
     api.listDocuments.mockResolvedValue([]);
     api.listStudySessions.mockResolvedValue([]);
+    api.getReadingProgress.mockResolvedValue({ documents: {}, sessions: {} });
+    api.recordViewedPage.mockImplementation((sessionId: string, documentId: string) => Promise.resolve({
+      study_session_id: sessionId, document_id: documentId,
+      session: { progress: { viewed_pages: 1, total_pages: 4, percent: 25 }, documents: { [documentId]: { viewed_pages: 1, total_pages: 4, percent: 25 } } },
+      document_global: { viewed_pages: 1, total_pages: 4, percent: 25 },
+    }));
     api.listAnnotations.mockResolvedValue([]);
     api.getQuestionSources.mockResolvedValue({
       annotation_id: "annotation-1", study_session_id: "session-1",
@@ -429,12 +441,32 @@ describe("App", () => {
 
     await waitFor(() => expect(api.attachDocumentToSession).toHaveBeenCalledTimes(2));
     const tabs = await screen.findAllByRole("tab");
-    expect(tabs.map((tab) => tab.textContent)).toEqual(["ifrs4 p.", "embeddings4 p."]);
+    await waitFor(() => expect(tabs.map((tab) => tab.textContent)).toEqual(["ifrs0%", "embeddings0%"]));
     expect(pdfDocument.props?.file).toBe("blob:notely/documento");
 
     fireEvent.click(tabs[1]);
     await waitFor(() => expect(api.listAnnotations).toHaveBeenCalledWith("embeddings.pdf"));
     expect(pdfDocument.props?.file).toBe("blob:notely/documento");
+  });
+
+  it("records a rendered page once and updates session and file progress", async () => {
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0)], openPanels: false });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Artigo0%" })).toBeInTheDocument());
+    await act(async () => { pdfDocument.pageRendered?.(); });
+    await waitFor(() => expect(api.recordViewedPage).toHaveBeenCalledWith("session-1", "doc-1", 1));
+    expect(screen.getByRole("tab", { name: "Artigo25%" })).toBeInTheDocument();
+    expect(screen.getByText("25% · 1/4 páginas visualizadas")).toBeInTheDocument();
+    await act(async () => { pdfDocument.pageRendered?.(); });
+    expect(api.recordViewedPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps reading available when progress registration fails", async () => {
+    api.recordViewedPage.mockRejectedValue(new Error("temporarily unavailable"));
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0)], openPanels: false });
+    await act(async () => { pdfDocument.pageRendered?.(); });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Artigo0%" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    expect(screen.getByLabelText("Ir para página")).toHaveValue(2);
   });
 
   it("opens a document already ingested through the library", async () => {

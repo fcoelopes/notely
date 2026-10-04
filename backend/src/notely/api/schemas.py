@@ -168,3 +168,34 @@ class QuestionSourcesResponse(BaseModel):
     version: int
     last_error: str | None
     sources: list[CuratedSourceResponse]
+
+
+class PageProgressResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    viewed_pages: int
+    total_pages: int
+    percent: int
+
+
+class SessionProgressResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    progress: PageProgressResponse
+    documents: dict[UUID, PageProgressResponse]
+
+
+class ReadingProgressSnapshotResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    documents: dict[UUID, PageProgressResponse]
+    sessions: dict[UUID, SessionProgressResponse]
+
+
+class ReadingProgressUpdateResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    study_session_id: UUID
+    document_id: UUID
+    session: SessionProgressResponse
+    document_global: PageProgressResponse

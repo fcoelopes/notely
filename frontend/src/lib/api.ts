@@ -5,6 +5,8 @@ import type {
   DocumentRecord,
   DocumentSummary,
   ReadingSession,
+  ReadingProgressSnapshot,
+  ReadingProgressUpdate,
   QuestionSources,
   SessionDocument,
   StudySession,
@@ -193,4 +195,17 @@ export function retryQuestionSources(sessionId: string, annotationId: string): P
   return request(`/api/study-sessions/${sessionId}/questions/${annotationId}/sources/retry`, {
     method: "POST",
   });
+}
+
+export function getReadingProgress(): Promise<ReadingProgressSnapshot> {
+  return request("/api/reading-progress");
+}
+
+export function recordViewedPage(
+  sessionId: string, documentId: string, pageNumber: number,
+): Promise<ReadingProgressUpdate> {
+  return request(
+    `/api/study-sessions/${sessionId}/documents/${documentId}/viewed-pages/${pageNumber}`,
+    { method: "PUT" },
+  );
 }

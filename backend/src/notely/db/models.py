@@ -168,6 +168,21 @@ class StudySessionDocumentRow(Base):
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class StudySessionViewedPageRow(Base):
+    __tablename__ = "study_session_viewed_pages"
+
+    study_session_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("study_sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    document_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    page_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    first_viewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class AISuggestionRow(Base):
     __tablename__ = "ai_suggestions"
 

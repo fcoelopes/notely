@@ -16,9 +16,11 @@ import {
   detachDocumentFromSession,
   documentContentUrl,
   getStudySession,
+  getReadingProgress,
   listAnnotations,
   listDocuments,
   listStudySessions,
+  recordViewedPage,
   rejectThemeSuggestion,
   requestThemeSuggestion,
   setStudySessionTheme,
@@ -31,6 +33,7 @@ import type {
   Annotation,
   AnnotationType,
   DocumentSummary,
+  ReadingProgressSnapshot,
   SelectionDraft,
   StudySession,
   StudySessionDetail,
@@ -44,6 +47,7 @@ const API_UNAVAILABLE =
 function App() {
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [sessions, setSessions] = useState<StudySession[]>([]);
+  const [progress, setProgress] = useState<ReadingProgressSnapshot | null>(null);
   const [session, setSession] = useState<StudySessionDetail | null>(null);
   const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null);
   const [localUrls, setLocalUrls] = useState<Record<string, string>>({});
@@ -62,19 +66,32 @@ function App() {
   const stageRef = useRef<HTMLDivElement>(null);
   const localUrlsRef = useRef<Record<string, string>>({});
   const loadedAnnotations = useRef<Set<string>>(new Set());
+  const pendingViewedPages = useRef<Set<string>>(new Set());
+  const progressRevision = useRef(0);
 
   const describeError = (caught: unknown): string =>
     caught instanceof ApiError ? caught.message : API_UNAVAILABLE;
+
+  const refreshProgress = useCallback(async () => {
+    const revision = progressRevision.current;
+    try {
+      const snapshot = await getReadingProgress();
+      if (revision === progressRevision.current) setProgress(snapshot);
+    } catch {
+      // Progresso é auxiliar: falhas não interrompem a leitura.
+    }
+  }, []);
 
   const refreshLibrary = useCallback(async () => {
     try {
       const [library, openSessions] = await Promise.all([listDocuments(), listStudySessions()]);
       setDocuments(library);
       setSessions(openSessions);
+      void refreshProgress();
     } catch (caught) {
       setError(describeError(caught));
     }
-  }, []);
+  }, [refreshProgress]);
 
   useEffect(() => {
     void refreshLibrary();
@@ -173,8 +190,9 @@ function App() {
       detail,
       ...current.filter((item) => item.id !== detail.id),
     ]);
+    void refreshProgress();
     return detail;
-  }, []);
+  }, [refreshProgress]);
 
   const openSession = useCallback(
     async (sessionId: string) => {
@@ -183,6 +201,7 @@ function App() {
       try {
         const detail = await getStudySession(sessionId);
         setSession(detail);
+        void refreshProgress();
         const first = detail.documents[0]?.document_id ?? null;
         setActiveDocumentId(first);
         if (first) await loadAnnotations(first);
@@ -192,8 +211,35 @@ function App() {
         setBusy(false);
       }
     },
-    [loadAnnotations],
+    [loadAnnotations, refreshProgress],
   );
+
+  const handlePageRendered = useCallback((sessionId: string, documentId: string, viewedPage: number) => {
+    const key = `${sessionId}:${documentId}:${viewedPage}`;
+    if (pendingViewedPages.current.has(key)) return;
+    pendingViewedPages.current.add(key);
+    void recordViewedPage(sessionId, documentId, viewedPage).then((update) => {
+      progressRevision.current += 1;
+      setProgress((current) => {
+        const previousSession = current?.sessions[update.study_session_id];
+        const previousDocument = current?.documents[update.document_id];
+        return {
+          documents: {
+            ...current?.documents,
+            [update.document_id]: previousDocument && previousDocument.viewed_pages > update.document_global.viewed_pages
+              ? previousDocument : update.document_global,
+          },
+          sessions: {
+            ...current?.sessions,
+            [update.study_session_id]: previousSession && previousSession.progress.viewed_pages > update.session.progress.viewed_pages
+              ? previousSession : update.session,
+          },
+        };
+      });
+    }).catch(() => {
+      pendingViewedPages.current.delete(key);
+    });
+  }, []);
 
   const selectDocument = useCallback(
     (documentId: string) => {
@@ -467,6 +513,7 @@ function App() {
           onResumeSession={(sessionId) => void openSession(sessionId)}
           onStartSession={(theme) => void handleStartSession(theme)}
           sessions={sessions}
+          progress={progress}
         />
       </div>
     );
@@ -483,9 +530,7 @@ function App() {
           <div className="session-heading">
             <span className="session-tag">Sessão de estudo</span>
             <strong>{session.theme ?? "Sem tema definido"}</strong>
-            <small>
-              {session.documents.length} documento{session.documents.length === 1 ? "" : "s"} na sessão
-            </small>
+            <small className="reading-progress">{progress ? `${progress.sessions[session.id]?.progress.percent ?? 0}% · ${progress.sessions[session.id]?.progress.viewed_pages ?? 0}/${progress.sessions[session.id]?.progress.total_pages ?? 0} páginas visualizadas` : "Progresso indisponível"}</small>
           </div>
 
           <div className="session-actions">
@@ -540,6 +585,7 @@ function App() {
         <DocumentTabs
           activeDocumentId={activeDocumentId}
           documents={session.documents}
+          progress={progress ? progress.sessions[session.id] ?? { progress: { viewed_pages: 0, total_pages: 0, percent: 0 }, documents: {} } : null}
           onClose={(documentId) => void handleRemoveDocument(documentId)}
           onSelect={selectDocument}
         />
@@ -628,6 +674,7 @@ function App() {
                     error={<div className="document-loading" role="alert">Não foi possível exibir esta página.</div>}
                     onLoadError={() => setError("Não foi possível carregar esta página do PDF.")}
                     onRenderError={() => setError("Não foi possível renderizar esta página do PDF.")}
+                    onRenderSuccess={() => { if (activeDocumentId) handlePageRendered(session.id, activeDocumentId, pageNumber); }}
                   />
                   <AnnotationOverlay annotations={currentAnnotations} />
                   {selection && composing && (

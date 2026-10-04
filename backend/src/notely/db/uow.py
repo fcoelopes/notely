@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from notely.core.models import (
@@ -35,6 +37,7 @@ from notely.db.models import (
     OutboxEventRow,
     ReadingSessionRow,
     StudySessionDocumentRow,
+    StudySessionViewedPageRow,
     StudySessionRow,
 )
 
@@ -302,6 +305,63 @@ class SqlAlchemyUnitOfWork:
             )
         )
         return 0 if highest is None else int(highest) + 1
+
+    async def add_viewed_page(
+        self, session_id: UUID, document_id: UUID, page_number: int, first_viewed_at: datetime
+    ) -> None:
+        await self._active_session().execute(
+            insert(StudySessionViewedPageRow).values(
+                study_session_id=session_id,
+                document_id=document_id,
+                page_number=page_number,
+                first_viewed_at=first_viewed_at,
+            ).on_conflict_do_nothing()
+        )
+
+    async def list_session_document_page_counts(
+        self, session_id: UUID | None = None
+    ) -> list[tuple[UUID, UUID, int, int]]:
+        visit = StudySessionViewedPageRow
+        statement = (
+            select(
+                StudySessionDocumentRow.study_session_id,
+                DocumentRow.id,
+                DocumentRow.page_count,
+                func.count(visit.page_number),
+            )
+            .join(DocumentRow, DocumentRow.id == StudySessionDocumentRow.document_id)
+            .outerjoin(visit, and_(
+                visit.study_session_id == StudySessionDocumentRow.study_session_id,
+                visit.document_id == StudySessionDocumentRow.document_id,
+            ))
+            .group_by(
+                StudySessionDocumentRow.study_session_id,
+                DocumentRow.id,
+                DocumentRow.page_count,
+            )
+        )
+        if session_id is not None:
+            statement = statement.where(StudySessionDocumentRow.study_session_id == session_id)
+        rows = (await self._active_session().execute(statement)).all()
+        return [(sid, did, int(total), int(viewed)) for sid, did, total, viewed in rows]
+
+    async def list_global_document_page_counts(
+        self, document_id: UUID | None = None
+    ) -> list[tuple[UUID, int, int]]:
+        visit = StudySessionViewedPageRow
+        statement = (
+            select(
+                DocumentRow.id,
+                DocumentRow.page_count,
+                func.count(func.distinct(visit.page_number)),
+            )
+            .outerjoin(visit, visit.document_id == DocumentRow.id)
+            .group_by(DocumentRow.id, DocumentRow.page_count)
+        )
+        if document_id is not None:
+            statement = statement.where(DocumentRow.id == document_id)
+        rows = (await self._active_session().execute(statement)).all()
+        return [(did, int(total), int(viewed)) for did, total, viewed in rows]
 
     async def add_ai_suggestion(self, suggestion: AISuggestion) -> None:
         self._active_session().add(

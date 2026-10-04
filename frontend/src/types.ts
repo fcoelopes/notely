@@ -138,3 +138,26 @@ export interface QuestionSources {
   last_error: string | null;
   sources: CuratedSource[];
 }
+
+export interface PageProgress {
+  viewed_pages: number;
+  total_pages: number;
+  percent: number;
+}
+
+export interface SessionProgress {
+  progress: PageProgress;
+  documents: Record<string, PageProgress>;
+}
+
+export interface ReadingProgressSnapshot {
+  documents: Record<string, PageProgress>;
+  sessions: Record<string, SessionProgress>;
+}
+
+export interface ReadingProgressUpdate {
+  study_session_id: string;
+  document_id: string;
+  session: SessionProgress;
+  document_global: PageProgress;
+}

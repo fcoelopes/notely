@@ -18,6 +18,8 @@ from notely.api.schemas import (
     DocumentCreate,
     DocumentResponse,
     ReadingSessionResponse,
+    ReadingProgressSnapshotResponse,
+    ReadingProgressUpdateResponse,
     ReadingSessionStart,
     ReadingSessionUpdate,
     SessionDocumentCreate,
@@ -415,6 +417,36 @@ def create_app(
         except (PageOutsideDocumentError, ValueError) as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         return ReadingSessionResponse.model_validate(session)
+
+    @app.get("/api/reading-progress", response_model=ReadingProgressSnapshotResponse)
+    async def get_reading_progress(
+        service: NotelyService = Depends(get_service),
+    ) -> ReadingProgressSnapshotResponse:
+        return ReadingProgressSnapshotResponse.model_validate(
+            await service.get_reading_progress()
+        )
+
+    @app.put(
+        "/api/study-sessions/{session_id}/documents/{document_id}/viewed-pages/{page_number}",
+        response_model=ReadingProgressUpdateResponse,
+    )
+    async def record_viewed_page(
+        session_id: UUID, document_id: UUID, page_number: int,
+        service: NotelyService = Depends(get_service),
+    ) -> ReadingProgressUpdateResponse:
+        try:
+            update = await service.record_viewed_page(
+                session_id=session_id, document_id=document_id, page_number=page_number
+            )
+        except StudySessionNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="study session not found") from exc
+        except DocumentNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="document not found") from exc
+        except SessionDocumentNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="document is not in this session") from exc
+        except PageOutsideDocumentError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return ReadingProgressUpdateResponse.model_validate(update)
 
     @app.post(
         "/api/study-sessions",

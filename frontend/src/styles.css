@@ -470,3 +470,5 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .source-preview .react-pdf__Page { max-width: 100%; overflow: hidden; }
 
 .source-state { color: var(--muted); text-decoration: none; font-size: 10px; }
+
+.reading-progress { color: #536c58; font-variant-numeric: tabular-nums; }

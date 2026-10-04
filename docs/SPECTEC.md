@@ -119,6 +119,33 @@ metadata_json
 created_at
 ```
 
+### StudySession
+
+Sessão de estudo: documentos lidos em conjunto sobre o mesmo tema.
+
+```text
+id
+theme?
+theme_origin?        # user | ai_suggestion
+theme_updated_at?
+created_at
+updated_at
+```
+
+O tema é autoral. `theme_origin` registra se o usuário o escreveu ou se ele veio de uma sugestão aceita explicitamente.
+
+### StudySessionDocument
+
+```text
+id
+study_session_id
+document_id
+position
+added_at
+```
+
+A ligação não duplica conteúdo: o mesmo documento pode participar de várias sessões, porque a ingestão deduplica por `sha256`.
+
 ### MindMap
 
 ```text
@@ -128,6 +155,33 @@ description?
 created_at
 updated_at
 ```
+
+### StudySession
+
+Sessão de estudo: documentos lidos em conjunto sobre o mesmo tema.
+
+```text
+id
+theme?
+theme_origin?        # user | ai_suggestion
+theme_updated_at?
+created_at
+updated_at
+```
+
+O tema é autoral. `theme_origin` registra se o usuário o escreveu ou se ele veio de uma sugestão aceita explicitamente.
+
+### StudySessionDocument
+
+```text
+id
+study_session_id
+document_id
+position
+added_at
+```
+
+A ligação não duplica conteúdo: o mesmo documento pode participar de várias sessões, porque a ingestão deduplica por `sha256`.
 
 ### MindMapNode
 
@@ -145,6 +199,33 @@ updated_at
 
 `node_type` pode representar `free_text`, `document_ref`, `annotation_ref`, `question_ref`, `concept_ref`, `claim_ref` ou `external_source_ref`.
 
+### StudySession
+
+Sessão de estudo: documentos lidos em conjunto sobre o mesmo tema.
+
+```text
+id
+theme?
+theme_origin?        # user | ai_suggestion
+theme_updated_at?
+created_at
+updated_at
+```
+
+O tema é autoral. `theme_origin` registra se o usuário o escreveu ou se ele veio de uma sugestão aceita explicitamente.
+
+### StudySessionDocument
+
+```text
+id
+study_session_id
+document_id
+position
+added_at
+```
+
+A ligação não duplica conteúdo: o mesmo documento pode participar de várias sessões, porque a ingestão deduplica por `sha256`.
+
 ### MindMapEdge
 
 ```text
@@ -157,6 +238,33 @@ edge_type?
 created_at
 updated_at
 ```
+
+### StudySession
+
+Sessão de estudo: documentos lidos em conjunto sobre o mesmo tema.
+
+```text
+id
+theme?
+theme_origin?        # user | ai_suggestion
+theme_updated_at?
+created_at
+updated_at
+```
+
+O tema é autoral. `theme_origin` registra se o usuário o escreveu ou se ele veio de uma sugestão aceita explicitamente.
+
+### StudySessionDocument
+
+```text
+id
+study_session_id
+document_id
+position
+added_at
+```
+
+A ligação não duplica conteúdo: o mesmo documento pode participar de várias sessões, porque a ingestão deduplica por `sha256`.
 
 ### MindMapNodeRef
 
@@ -190,6 +298,8 @@ rejected_at?
 
 `status` deve distinguir ao menos `pending`, `accepted` e `rejected`.
 
+`subject_type`/`subject_id` apontam para o alvo da sugestão. O primeiro uso é `study_session` com `suggestion_type = study_session_theme`: a sugestão fica pendente e só entra no tema da sessão quando o usuário aceita, momento em que `accepted_at` é preenchido.
+
 ### Annotation
 
 ```text
@@ -217,6 +327,51 @@ important
 disagreement
 relation
 ```
+
+#### Identidade do trecho
+
+`position_json` reconstrói a marcação visualmente; `passage_id` identifica o trecho de forma
+estável. O algoritmo é versionado e determinístico:
+
+```text
+passage_id_version = 1
+namespace = "notely-passage:v1"
+passage_id = sha256(namespace + "\n" + document_sha256 + "\n" + page_number
+                    + "\n" + exact_quote_normalized + "\n" + prefix + "\n" + suffix)
+```
+
+`exact_quote_normalized` colapsa espaços, então zoom, viewport e re-renderização não mudam a
+identidade. Uma nova versão do algoritmo exige novo `namespace` e nova `passage_id_version`,
+sem reinterpretar identificadores históricos.
+
+### ReadingSession
+
+Uma tentativa de leitura sobre um documento. O estado atual fica no PostgreSQL; o tempo fica
+em `reader_events`.
+
+```text
+id
+document_id
+filename_snapshot
+started_at
+ended_at?
+start_page?
+end_page?
+last_activity_at
+created_at
+updated_at
+```
+
+Regras:
+
+- começa na primeira interação real do usuário com o documento; upload não conta como leitura;
+- `filename_snapshot` preserva o nome usado naquela sessão, enquanto `document_id` mantém a
+  identidade canônica;
+- `last_activity_at` é atualizado durante a leitura;
+- encerra por ação explícita, fechamento best-effort da página ou timeout configurável.
+
+Uma `ReadingSession` é distinta de `StudySession`: a primeira registra uma leitura sobre um
+documento; a segunda agrupa documentos por tema.
 
 ### Question
 
@@ -327,17 +482,33 @@ graph.projected
 embedding.generated
 ```
 
-Campos sugeridos:
+`reader_events` é uma hypertable (chunk de 7 dias) com `UNIQUE (event_id, time)`, o que permite
+projeção idempotente via `ON CONFLICT`.
 
 ```text
-time timestamptz
-event_id uuid
-event_type text
-user_id uuid?
-document_id uuid?
+time timestamptz NOT NULL
+event_id uuid NOT NULL
+event_type text NOT NULL
+session_id uuid?
+document_id uuid NOT NULL
 annotation_id uuid?
+annotation_type text?
+passage_id text?
+passage_id_version smallint?
 page_number integer?
-metadata jsonb
+metadata jsonb NOT NULL DEFAULT '{}'
+```
+
+O filename não é duplicado na trilha: o contexto histórico é resolvido por
+`session_id -> reading_sessions.filename_snapshot`.
+
+Eventos iniciais e origem:
+
+```text
+reading.started     sessão iniciada na primeira interação real
+reading.ended       encerramento explícito, best-effort ou timeout
+annotation.created  marcação criada (tipo, página, passage_id)
+annotation.updated  marcação alterada
 ```
 
 TimescaleDB não deve ser usado como substituto das tabelas de domínio.
@@ -756,6 +927,20 @@ mapa aberto
 
 As operações de mapa devem preservar layout, rótulos e relações definidos pelo usuário.
 
+## 19.5 Worker da trilha temporal
+
+`notely.workers.timescale` consome o outbox e projeta a trilha:
+
+- reivindica apenas os tipos de evento que possui, então eventos de outros consumidores não
+  ocupam o lote nem travam a fila;
+- usa `FOR UPDATE SKIP LOCKED`, com `attempt_count`, `available_at` e `last_error` para retry
+  com backoff exponencial e estado terminal após limite configurável;
+- é idempotente: `ON CONFLICT (event_id, time)` não duplica a linha temporal;
+- completa payloads gravados antes desta entrega lendo a `Annotation` original, sem descartar
+  o evento;
+- pode rodar um lote (`--once`) ou em loop, com `NOTELY_OUTBOX_BATCH_SIZE` e
+  `NOTELY_OUTBOX_INTERVAL_SECONDS`.
+
 ## 20. Atualização do frontend
 
 Para eventos assíncronos, começar com SSE:
@@ -830,7 +1015,10 @@ notely.import.annotations.duplicates
 - AGE falha e reprocessa;
 - embedding falha e reprocessa;
 - importação de annotation nativa;
-- importação visual de highlight achatado.
+- importação visual de highlight achatado;
+- sessão de leitura + outbox na mesma transação;
+- outbox → reader_events com retry sem duplicação;
+- equivalência entre o `passage_id` calculado no domínio e o backfill em SQL.
 
 ### E2E
 
@@ -854,6 +1042,9 @@ PDF.js → annotation → PostgreSQL + Outbox → reload.
 
 Workers → reader_events + pgvector + AGE.
 
+Entregue parcialmente: worker de `reader_events` em TimescaleDB, sessões de leitura e
+`passage_id` versionado. pgvector e AGE seguem pendentes.
+
 ### Fase 3
 
 Seleção visual → provider multimodal → resposta + proveniência.
@@ -873,6 +1064,10 @@ Mind maps autorais → nós/arestas/layout → referências a documentos e anota
 ### Fase 7
 
 Search/Research Gateway.
+
+### Fase 7.5
+
+Sessões de estudo: tema autoral, múltiplos documentos por sessão, biblioteca e download do PDF armazenado, sugestões de tema registradas como `AISuggestion` pendente com aceite explícito. Ver `docs/adr/0002-study-sessions-and-theme-suggestions.md`.
 
 ### Fase 8
 

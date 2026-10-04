@@ -1,6 +1,10 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: timescale/timescaledb:2.30.2-pg17
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=timescaledb
     environment:
       POSTGRES_DB: notely
       POSTGRES_USER: notely

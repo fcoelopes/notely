@@ -3,11 +3,40 @@ from __future__ import annotations
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from notely.core.models import Annotation, AnnotationSource, AnnotationType, AuthorType, Document, OutboxEvent
-from notely.db.models import AnnotationRow, DocumentRow, OutboxEventRow
+from notely.core.models import (
+    AISuggestion,
+    Annotation,
+    CurationRequest,
+    CurationStatus,
+    CuratedSource,
+    ReadingSession,
+    AnnotationSource,
+    AnnotationType,
+    AuthorType,
+    Document,
+    OutboxEvent,
+    StudySession,
+    StudySessionDocument,
+    SuggestionStatus,
+    ThemeOrigin,
+)
+from notely.providers.pdf_text import EXTRACTOR_VERSION
+from notely.db.models import (
+    AISuggestionRow,
+    AnnotationRow,
+    CurationRequestRow,
+    CuratedSourceRow,
+    DocumentCorpusChunkRow,
+    DocumentCorpusIndexRow,
+    DocumentRow,
+    OutboxEventRow,
+    ReadingSessionRow,
+    StudySessionDocumentRow,
+    StudySessionRow,
+)
 
 
 class SqlAlchemyUnitOfWork:
@@ -46,6 +75,14 @@ class SqlAlchemyUnitOfWork:
         )
         return _to_document(row) if row else None
 
+    async def list_documents(self) -> list[Document]:
+        rows = (
+            await self._active_session().scalars(
+                select(DocumentRow).order_by(DocumentRow.created_at.desc(), DocumentRow.id)
+            )
+        ).all()
+        return [_to_document(row) for row in rows]
+
     async def add_document(self, document: Document) -> None:
         self._active_session().add(
             DocumentRow(
@@ -71,11 +108,72 @@ class SqlAlchemyUnitOfWork:
                 quote=annotation.quote,
                 comment=annotation.comment,
                 position_json=annotation.position,
+                passage_id=annotation.passage_id,
+                passage_id_version=annotation.passage_id_version,
                 source=annotation.source.value,
                 author_type=annotation.author_type.value,
+                reading_session_id=annotation.reading_session_id,
+                study_session_id=annotation.study_session_id,
                 created_at=annotation.created_at,
                 updated_at=annotation.updated_at,
             )
+        )
+
+    async def get_annotation(self, annotation_id: UUID) -> Annotation | None:
+        row = await self._active_session().get(AnnotationRow, annotation_id)
+        return _to_annotation(row) if row and row.deleted_at is None else None
+
+    async def add_curation_request(self, request: CurationRequest) -> None:
+        self._active_session().add(CurationRequestRow(
+            id=request.id, annotation_id=request.annotation_id,
+            study_session_id=request.study_session_id, version=request.version,
+            status=request.status.value, attempt_count=request.attempt_count,
+            last_error=request.last_error, created_at=request.created_at,
+            updated_at=request.updated_at, completed_at=request.completed_at,
+        ))
+
+    async def get_curation_request(self, annotation_id: UUID) -> CurationRequest | None:
+        row = await self._active_session().scalar(
+            select(CurationRequestRow).where(CurationRequestRow.annotation_id == annotation_id)
+        )
+        return _to_curation_request(row) if row else None
+
+    async def update_curation_request(self, request: CurationRequest) -> None:
+        row = await self._active_session().get(CurationRequestRow, request.id)
+        if row is None:
+            raise LookupError("curation request does not exist")
+        row.version = request.version
+        row.status = request.status.value
+        row.attempt_count = request.attempt_count
+        row.last_error = request.last_error
+        row.updated_at = request.updated_at
+        row.completed_at = request.completed_at
+
+    async def list_curated_sources(self, request_id: UUID) -> list[CuratedSource]:
+        rows = (await self._active_session().scalars(
+            select(CuratedSourceRow).where(CuratedSourceRow.request_id == request_id)
+            .order_by(CuratedSourceRow.rank)
+        )).all()
+        return [_to_curated_source(row) for row in rows]
+
+    async def source_is_current(self, source: CuratedSource, session_id: UUID) -> bool:
+        if await self.get_study_session_document(session_id, source.document_id) is None:
+            return False
+        chunk = await self._active_session().get(
+            DocumentCorpusChunkRow,
+            (source.document_id, source.page_number, source.chunk_number),
+        )
+        index = await self._active_session().get(DocumentCorpusIndexRow, source.document_id)
+        document = await self.get_document(source.document_id)
+        return bool(
+            chunk and index and document and index.status == "ready"
+            and index.extractor_version == EXTRACTOR_VERSION
+            and index.source_sha256 == document.sha256
+            and source.page_number <= document.page_count
+            and chunk.content_sha256 == source.chunk_sha256
+            and chunk.text_content == source.excerpt
+            and chunk.start_offset == source.start_offset
+            and chunk.end_offset == source.end_offset
         )
 
     async def add_outbox_event(self, event: OutboxEvent) -> None:
@@ -86,6 +184,7 @@ class SqlAlchemyUnitOfWork:
                 aggregate_id=event.aggregate_id,
                 event_type=event.event_type,
                 payload=event.payload,
+                event_key=event.event_key,
                 created_at=event.created_at,
                 available_at=event.available_at,
                 attempt_count=0,
@@ -105,8 +204,192 @@ class SqlAlchemyUnitOfWork:
         ).all()
         return [_to_annotation(row) for row in rows]
 
+    async def add_reading_session(self, session: ReadingSession) -> None:
+        self._active_session().add(_reading_session_row(session))
+
+    async def update_reading_session(self, session: ReadingSession) -> None:
+        row = await self._active_session().get(ReadingSessionRow, session.id)
+        if row is None:
+            raise LookupError(f"reading session {session.id} does not exist")
+        row.ended_at = session.ended_at
+        row.start_page = session.start_page
+        row.end_page = session.end_page
+        row.last_activity_at = session.last_activity_at
+        row.updated_at = session.updated_at
+
+    async def get_reading_session(self, session_id: UUID) -> ReadingSession | None:
+        row = await self._active_session().get(ReadingSessionRow, session_id)
+        return _to_reading_session(row) if row else None
+
+    async def add_study_session(self, session: StudySession) -> None:
+        self._active_session().add(_study_session_row(session))
+
+    async def update_study_session(self, session: StudySession) -> None:
+        row = await self._active_session().get(StudySessionRow, session.id)
+        if row is None:
+            raise LookupError(f"study session {session.id} does not exist")
+        row.theme = session.theme
+        row.theme_origin = session.theme_origin.value if session.theme_origin else None
+        row.theme_updated_at = session.theme_updated_at
+        row.updated_at = session.updated_at
+
+    async def get_study_session(self, session_id: UUID) -> StudySession | None:
+        row = await self._active_session().get(StudySessionRow, session_id)
+        return _to_study_session(row) if row else None
+
+    async def list_study_sessions(self) -> list[StudySession]:
+        rows = (
+            await self._active_session().scalars(
+                select(StudySessionRow).order_by(
+                    StudySessionRow.updated_at.desc(),
+                    StudySessionRow.created_at.desc(),
+                    StudySessionRow.id,
+                )
+            )
+        ).all()
+        return [_to_study_session(row) for row in rows]
+
+    async def add_study_session_document(self, link: StudySessionDocument) -> None:
+        self._active_session().add(
+            StudySessionDocumentRow(
+                id=link.id,
+                study_session_id=link.study_session_id,
+                document_id=link.document_id,
+                position=link.position,
+                added_at=link.added_at,
+            )
+        )
+
+    async def get_study_session_document(
+        self, session_id: UUID, document_id: UUID
+    ) -> StudySessionDocument | None:
+        row = await self._active_session().scalar(
+            select(StudySessionDocumentRow).where(
+                StudySessionDocumentRow.study_session_id == session_id,
+                StudySessionDocumentRow.document_id == document_id,
+            )
+        )
+        return _to_study_session_document(row) if row else None
+
+    async def list_study_session_documents(
+        self, session_id: UUID
+    ) -> list[StudySessionDocument]:
+        rows = (
+            await self._active_session().scalars(
+                select(StudySessionDocumentRow)
+                .where(StudySessionDocumentRow.study_session_id == session_id)
+                .order_by(
+                    StudySessionDocumentRow.position,
+                    StudySessionDocumentRow.added_at,
+                    StudySessionDocumentRow.id,
+                )
+            )
+        ).all()
+        return [_to_study_session_document(row) for row in rows]
+
+    async def remove_study_session_document(self, session_id: UUID, document_id: UUID) -> None:
+        await self._active_session().execute(
+            delete(StudySessionDocumentRow).where(
+                StudySessionDocumentRow.study_session_id == session_id,
+                StudySessionDocumentRow.document_id == document_id,
+            )
+        )
+
+    async def next_study_session_position(self, session_id: UUID) -> int:
+        highest = await self._active_session().scalar(
+            select(func.max(StudySessionDocumentRow.position)).where(
+                StudySessionDocumentRow.study_session_id == session_id
+            )
+        )
+        return 0 if highest is None else int(highest) + 1
+
+    async def add_ai_suggestion(self, suggestion: AISuggestion) -> None:
+        self._active_session().add(
+            AISuggestionRow(
+                id=suggestion.id,
+                suggestion_type=suggestion.suggestion_type,
+                subject_type=suggestion.subject_type,
+                subject_id=suggestion.subject_id,
+                payload=suggestion.payload,
+                provider=suggestion.provider,
+                model=suggestion.model,
+                status=suggestion.status.value,
+                created_at=suggestion.created_at,
+                accepted_at=suggestion.accepted_at,
+                rejected_at=suggestion.rejected_at,
+            )
+        )
+
+    async def update_ai_suggestion(self, suggestion: AISuggestion) -> None:
+        row = await self._active_session().get(AISuggestionRow, suggestion.id)
+        if row is None:
+            raise LookupError(f"suggestion {suggestion.id} does not exist")
+        row.status = suggestion.status.value
+        row.accepted_at = suggestion.accepted_at
+        row.rejected_at = suggestion.rejected_at
+
+    async def get_ai_suggestion(self, suggestion_id: UUID) -> AISuggestion | None:
+        row = await self._active_session().get(AISuggestionRow, suggestion_id)
+        return _to_ai_suggestion(row) if row else None
+
+    async def list_ai_suggestions(
+        self, subject_type: str, subject_id: UUID
+    ) -> list[AISuggestion]:
+        rows = (
+            await self._active_session().scalars(
+                select(AISuggestionRow)
+                .where(
+                    AISuggestionRow.subject_type == subject_type,
+                    AISuggestionRow.subject_id == subject_id,
+                )
+                .order_by(AISuggestionRow.created_at.desc(), AISuggestionRow.id)
+            )
+        ).all()
+        return [_to_ai_suggestion(row) for row in rows]
+
     async def commit(self) -> None:
         await self._active_session().commit()
+
+
+def _reading_session_row(session: ReadingSession) -> ReadingSessionRow:
+    return ReadingSessionRow(
+        id=session.id,
+        document_id=session.document_id,
+        filename_snapshot=session.filename_snapshot,
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        start_page=session.start_page,
+        end_page=session.end_page,
+        last_activity_at=session.last_activity_at,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
+
+
+def _to_reading_session(row: ReadingSessionRow) -> ReadingSession:
+    return ReadingSession(
+        id=row.id,
+        document_id=row.document_id,
+        filename_snapshot=row.filename_snapshot,
+        started_at=row.started_at,
+        ended_at=row.ended_at,
+        start_page=row.start_page,
+        end_page=row.end_page,
+        last_activity_at=row.last_activity_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _study_session_row(session: StudySession) -> StudySessionRow:
+    return StudySessionRow(
+        id=session.id,
+        theme=session.theme,
+        theme_origin=session.theme_origin.value if session.theme_origin else None,
+        theme_updated_at=session.theme_updated_at,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
 
 
 def _to_document(row: DocumentRow) -> Document:
@@ -132,9 +415,70 @@ def _to_annotation(row: AnnotationRow) -> Annotation:
         quote=row.quote,
         comment=row.comment,
         position=row.position_json,
+        passage_id=row.passage_id,
+        passage_id_version=row.passage_id_version,
         source=AnnotationSource(row.source),
         author_type=AuthorType(row.author_type),
+        reading_session_id=row.reading_session_id,
+        study_session_id=row.study_session_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
 
+
+def _to_study_session(row: StudySessionRow) -> StudySession:
+    return StudySession(
+        id=row.id,
+        theme=row.theme,
+        theme_origin=ThemeOrigin(row.theme_origin) if row.theme_origin else None,
+        theme_updated_at=row.theme_updated_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _to_study_session_document(row: StudySessionDocumentRow) -> StudySessionDocument:
+    return StudySessionDocument(
+        id=row.id,
+        study_session_id=row.study_session_id,
+        document_id=row.document_id,
+        position=row.position,
+        added_at=row.added_at,
+    )
+
+
+def _to_ai_suggestion(row: AISuggestionRow) -> AISuggestion:
+    return AISuggestion(
+        id=row.id,
+        suggestion_type=row.suggestion_type,
+        subject_type=row.subject_type,
+        subject_id=row.subject_id,
+        payload=row.payload,
+        provider=row.provider,
+        model=row.model,
+        status=SuggestionStatus(row.status),
+        created_at=row.created_at,
+        accepted_at=row.accepted_at,
+        rejected_at=row.rejected_at,
+    )
+
+
+def _to_curation_request(row: CurationRequestRow) -> CurationRequest:
+    return CurationRequest(
+        id=row.id, annotation_id=row.annotation_id,
+        study_session_id=row.study_session_id, version=row.version,
+        status=CurationStatus(row.status), attempt_count=row.attempt_count,
+        last_error=row.last_error, created_at=row.created_at,
+        updated_at=row.updated_at, completed_at=row.completed_at,
+    )
+
+
+def _to_curated_source(row: CuratedSourceRow) -> CuratedSource:
+    return CuratedSource(
+        id=row.id, request_id=row.request_id, document_id=row.document_id,
+        page_number=row.page_number, chunk_number=row.chunk_number,
+        chunk_sha256=row.chunk_sha256, start_offset=row.start_offset,
+        end_offset=row.end_offset, excerpt=row.excerpt, reason=row.reason,
+        rank=row.rank, provider=row.provider, model=row.model,
+        retrieval_version=row.retrieval_version, created_at=row.created_at,
+    )

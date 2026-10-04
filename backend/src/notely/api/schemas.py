@@ -6,7 +6,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from notely.core.models import AnnotationSource, AnnotationType, AuthorType
+from notely.core.models import (
+    AnnotationSource,
+    AnnotationType,
+    CurationStatus,
+    AuthorType,
+    SuggestionStatus,
+    ThemeOrigin,
+)
+
+MAX_THEME_LENGTH = 200
 
 
 class DocumentCreate(BaseModel):
@@ -34,6 +43,8 @@ class AnnotationCreate(BaseModel):
     comment: str | None = None
     position: dict[str, Any]
     source: AnnotationSource = AnnotationSource.USER_SELECTION
+    reading_session_id: UUID | None = None
+    study_session_id: UUID | None = None
 
 
 class AnnotationResponse(BaseModel):
@@ -46,8 +57,114 @@ class AnnotationResponse(BaseModel):
     quote: str
     comment: str | None
     position: dict[str, Any]
+    passage_id: str
+    passage_id_version: int
     source: AnnotationSource
     author_type: AuthorType
+    reading_session_id: UUID | None
+    study_session_id: UUID | None
     created_at: datetime
     updated_at: datetime
 
+
+class ReadingSessionStart(BaseModel):
+    document_id: UUID
+    page_number: int | None = Field(default=None, ge=1)
+    filename: str | None = Field(default=None, max_length=400)
+
+
+class ReadingSessionUpdate(BaseModel):
+    page_number: int | None = Field(default=None, ge=1)
+    ended: bool = False
+
+
+class ReadingSessionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    document_id: UUID
+    filename_snapshot: str
+    started_at: datetime
+    ended_at: datetime | None
+    start_page: int | None
+    end_page: int | None
+    last_activity_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class StudySessionCreate(BaseModel):
+    theme: str | None = Field(default=None, max_length=MAX_THEME_LENGTH)
+
+
+class StudySessionThemeUpdate(BaseModel):
+    theme: str = Field(min_length=1, max_length=MAX_THEME_LENGTH)
+
+
+class SessionDocumentCreate(BaseModel):
+    document_id: UUID
+
+
+class StudySessionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    theme: str | None
+    theme_origin: ThemeOrigin | None
+    theme_updated_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class StudySessionDocumentResponse(BaseModel):
+    id: UUID
+    study_session_id: UUID
+    document_id: UUID
+    position: int
+    added_at: datetime
+    title: str
+    filename: str
+    page_count: int
+
+
+class AISuggestionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    suggestion_type: str
+    subject_type: str
+    subject_id: UUID
+    status: SuggestionStatus
+    payload: dict[str, Any]
+    provider: str
+    model: str
+    created_at: datetime
+    accepted_at: datetime | None
+    rejected_at: datetime | None
+
+
+class StudySessionDetailResponse(StudySessionResponse):
+    documents: list[StudySessionDocumentResponse] = Field(default_factory=list)
+    suggestions: list[AISuggestionResponse] = Field(default_factory=list)
+
+
+class CuratedSourceResponse(BaseModel):
+    id: UUID
+    document_id: UUID
+    document_title: str
+    page_number: int
+    excerpt: str
+    reason: str
+    rank: int
+    provider: str
+    model: str
+    available: bool
+
+
+class QuestionSourcesResponse(BaseModel):
+    annotation_id: UUID
+    study_session_id: UUID
+    status: CurationStatus
+    version: int
+    last_error: str | None
+    sources: list[CuratedSourceResponse]

@@ -69,6 +69,16 @@ O objetivo não é criar um editor de documentos genérico, mas um ambiente de l
 
 A interface deve priorizar o documento. Recursos de IA, grafo e pesquisa devem aparecer como apoio, e não disputar atenção com a leitura.
 
+## Sessão de estudo
+
+Ler sobre um tema normalmente significa ler vários arquivos. O Notely reúne esses arquivos em uma **sessão de estudo**:
+
+- o tema da sessão é escrito pelo usuário; ele pode editar quando quiser;
+- cada sessão mantém vários PDFs abertos, com abas para trocar de documento;
+- as anotações continuam vinculadas ao documento de origem, preservando a proveniência;
+- o usuário pode pedir uma **sugestão de tema**, gerada a partir dos títulos e das anotações da sessão. A sugestão fica pendente, mostra provider e modelo, e só entra na sessão quando o usuário aceita; editá-la depois devolve a autoria ao usuário;
+- sessões abertas e documentos já ingeridos ficam disponíveis para retomar a leitura, com o PDF servido pela API a partir do armazenamento de objetos.
+
 ## Reader-first, não reader-only
 
 O Notely também ingere o conteúdo dos PDFs.
@@ -317,6 +327,7 @@ Responsabilidades principais:
 
 - [PRD — requisitos do produto](docs/PRD.md)
 - [SPECTEC — especificação técnica](docs/SPECTEC.md)
+- [Plano — curadoria de fontes para dúvidas em sessões de estudo](docs/plano-curadoria-fontes-duvidas.md)
 - [AGENTS.md — regras operacionais para agentes](AGENTS.md)
 
 ## Estado do projeto
@@ -339,6 +350,8 @@ fechar e reabrir
 highlight continua lá
 ```
 
-Depois dessa base, entram enriquecimento assíncrono, busca semântica, grafo, multimodal e pesquisa.
+Depois dessa base entraram as sessões de estudo com tema autoral, abas de documentos, biblioteca de documentos já ingeridos e sugestões de tema registradas com proveniência.
+
+Ainda entram: enriquecimento assíncrono, busca semântica, grafo, multimodal e pesquisa.
 
 O objetivo não é construir todas as capacidades de uma vez. É garantir primeiro que **a leitura e as anotações sejam sólidas**, para então adicionar inteligência sem comprometer o dado mais importante do sistema: aquilo que o usuário decidiu guardar.

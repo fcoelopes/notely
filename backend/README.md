@@ -131,3 +131,28 @@ o identifica como busca lexical. Não há resposta automática nem pesquisa web.
 `POST` no mesmo caminho acrescido de `/retry` reinicia um pedido `failed` ou
 `no_source`. O worker usa retry com backoff enquanto o corpus está pendente; ao
 esgotar as tentativas, registra `failed` sem alterar a dúvida.
+
+## Projeção de grafo no Apache AGE (issue #6)
+
+A imagem local do PostgreSQL é construída de [`infra/db/Dockerfile`](../infra/db/Dockerfile):
+sobre a base `timescale/timescaledb`, ela compila o Apache AGE 1.7.0 (PG17) e o servidor
+passa a subir com `shared_preload_libraries=timescaledb,age`. Sem essa imagem, a migration
+`0008` falha ao criar a extensão. O primeiro build compila o AGE e demora cerca de 30 s;
+depois fica em cache.
+
+A migration `0008` cria a extensão e o grafo `notely` com os labels `Document`,
+`Annotation`, `Question` e `HAS_ANNOTATION`. O worker de grafo consome
+`document.created` e `annotation.created` do outbox, lê o estado autoral do PostgreSQL e
+projeta de forma idempotente:
+
+```bash
+uv run --project backend python -m notely.workers.graph --once      # um lote
+uv run --project backend python -m notely.workers.graph             # em loop
+uv run --project backend python -m notely.workers.graph --rebuild   # reconstrói do PostgreSQL
+```
+
+Documentos e anotações anteriores a esta entrega não têm evento pendente no outbox (já
+consumidos pelos workers existentes), então a projeção inicial do acervo existente exige
+`--rebuild`. Novas anotações são projetadas pelo worker em execução. O grafo é
+reconstruível: apagá-lo e rodar `--rebuild` reproduz o estado a partir do PostgreSQL. Ver
+[ADR 0003](../docs/adr/0003-age-graph-projection.md).

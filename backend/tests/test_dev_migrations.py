@@ -48,14 +48,14 @@ def migrate(name: str, backup_dir: Path) -> subprocess.CompletedProcess[str]:
 def test_new_database_is_migrated_once(database: str, tmp_path: Path) -> None:
     first = migrate(database, tmp_path)
     assert first.returncode == 0, first.stderr
-    assert "Alembic revision 0007: current" in first.stdout
+    assert "Alembic revision 0008: current" in first.stdout
     second = migrate(database, tmp_path)
     assert second.returncode == 0, second.stderr
-    assert "Alembic revision 0007: current" in second.stdout
+    assert "Alembic revision 0008: current" in second.stdout
     assert list(tmp_path.glob("*.dump")) == []
     result = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
                     "select version_num from alembic_version")
-    assert result.stdout.strip() == "0007"
+    assert result.stdout.strip() == "0008"
 
 
 def test_existing_database_receives_only_missing_migrations(database: str, tmp_path: Path) -> None:
@@ -73,11 +73,11 @@ def test_existing_database_receives_only_missing_migrations(database: str, tmp_p
     result = migrate(database, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "Legacy schema registered at Alembic revision 0003" in result.stdout
-    assert "Alembic revision 0007: current" in result.stdout
+    assert "Alembic revision 0008: current" in result.stdout
     assert len(list(tmp_path.glob("*.dump"))) == 1
     version = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
                      "select version_num from alembic_version")
-    assert version.stdout.strip() == "0007"
+    assert version.stdout.strip() == "0008"
     preserved = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
                        f"select title from documents where id = '{document_id}'")
     assert preserved.stdout.strip() == "Preserve me"
@@ -86,28 +86,29 @@ def test_existing_database_receives_only_missing_migrations(database: str, tmp_p
 def test_alembic_downgrade_and_upgrade(database: str, tmp_path: Path) -> None:
     assert migrate(database, tmp_path).returncode == 0
     preview = subprocess.run(
-        [sys.executable, str(ROLLBACK), "--database", database, "--target", "0006"],
+        [sys.executable, str(ROLLBACK), "--database", database, "--target", "0007"],
         text=True, capture_output=True, cwd=ROOT, check=False,
     )
     assert preview.returncode == 0, preview.stderr
     assert "Preview only" in preview.stdout
     assert list(tmp_path.glob("*.dump")) == []
     downgraded = subprocess.run(
-        [sys.executable, str(ROLLBACK), "--database", database, "--target", "0006",
+        [sys.executable, str(ROLLBACK), "--database", database, "--target", "0007",
          "--backup-dir", str(tmp_path), "--execute"],
         text=True, capture_output=True, cwd=ROOT, check=False,
     )
     assert downgraded.returncode == 0, downgraded.stderr
     assert "Backup and full restore verified" in downgraded.stdout
+    # A revisão 0008 é projeção derivada: o down remove a extensão e o grafo AGE.
     missing = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
-                     "select to_regclass('study_session_viewed_pages') is null")
-    assert missing.stdout.strip() == "t"
+                     "select count(*) from pg_extension where extname = 'age'")
+    assert missing.stdout.strip() == "0"
     upgraded = migrate(database, tmp_path)
     assert upgraded.returncode == 0, upgraded.stderr
     assert len(list(tmp_path.glob("*.dump"))) == 2
     restored = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
                       "select version_num from alembic_version")
-    assert restored.stdout.strip() == "0007"
+    assert restored.stdout.strip() == "0008"
 
 
 def test_partial_schema_is_not_modified(database: str, tmp_path: Path) -> None:
@@ -136,6 +137,15 @@ def test_downgrade_cannot_discard_reading_progress(database: str, tmp_path: Path
                              "(study_session_id, document_id, page_number, first_viewed_at) VALUES "
                              f"('{session_id}', '{document_id}', 1, now());"))
     assert inserted.returncode == 0, inserted.stderr
+    # O rollback desce uma revisão por vez: 0008 -> 0007 primeiro, para chegar à
+    # revisão cujo down descartaria o progresso de leitura.
+    stepped = subprocess.run(
+        [sys.executable, str(ROLLBACK), "--database", database, "--target", "0007",
+         "--backup-dir", str(tmp_path), "--execute"],
+        text=True, capture_output=True, cwd=ROOT, check=False,
+    )
+    assert stepped.returncode == 0, stepped.stderr
+    dumps = len(list(tmp_path.glob("*.dump")))
     preview = subprocess.run(
         [sys.executable, str(ROLLBACK), "--database", database, "--target", "0006",
          "--backup-dir", str(tmp_path)],
@@ -150,7 +160,8 @@ def test_downgrade_cannot_discard_reading_progress(database: str, tmp_path: Path
     )
     assert refused.returncode == 1
     assert "would discard protected data" in refused.stderr
-    assert list(tmp_path.glob("*.dump")) == []
+    # Nem a prévia nem a recusa criam backup novo.
+    assert len(list(tmp_path.glob("*.dump"))) == dumps
     environment = os.environ | {
         "NOTELY_DATABASE_URL": f"postgresql+asyncpg://notely:notely@localhost:5432/{database}"
     }
@@ -192,7 +203,7 @@ def test_backup_restores_to_new_database_and_startup_can_use_it(database: str, t
             text=True, capture_output=True, cwd=ROOT, check=False,
         )
         assert restored.returncode == 0, restored.stderr
-        assert "Alembic revision: 0007" in restored.stdout
+        assert "Alembic revision: 0008" in restored.stdout
         refused = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "restore_backup.py"), str(archive),
              "--database", recovered],
@@ -207,7 +218,7 @@ def test_backup_restores_to_new_database_and_startup_can_use_it(database: str, t
             text=True, capture_output=True, cwd=ROOT, env=environment, check=False,
         )
         assert started.returncode == 0, started.stderr
-        assert "Alembic revision 0007: current" in started.stdout
+        assert "Alembic revision 0008: current" in started.stdout
         document = docker("psql", "-U", "notely", "-d", recovered, "-At", "-c",
                           f"select title from documents where id = '{document_id}'")
         assert document.stdout.strip() == "Recovered"

@@ -362,6 +362,8 @@ highlight continua lá
 
 Depois dessa base entraram as sessões de estudo com tema autoral, abas de documentos, biblioteca de documentos já ingeridos e sugestões de tema registradas com proveniência.
 
-Ainda entram: enriquecimento assíncrono, busca semântica, grafo, multimodal e pesquisa.
+A ainda pequena projeção de grafo entrou junto: documentos e anotações passam a ser projetados no Apache AGE como representação derivada e reconstruível a partir do PostgreSQL.
+
+Ainda entram: conceitos e claims no grafo, busca semântica, multimodal e pesquisa.
 
 O objetivo não é construir todas as capacidades de uma vez. É garantir primeiro que **a leitura e as anotações sejam sólidas**, para então adicionar inteligência sem comprometer o dado mais importante do sistema: aquilo que o usuário decidiu guardar.

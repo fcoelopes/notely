@@ -1043,7 +1043,10 @@ PDF.js → annotation → PostgreSQL + Outbox → reload.
 Workers → reader_events + pgvector + AGE.
 
 Entregue parcialmente: worker de `reader_events` em TimescaleDB, sessões de leitura e
-`passage_id` versionado. pgvector e AGE seguem pendentes.
+`passage_id` versionado. A projeção estrutural no AGE (`Document`, `Annotation`,
+`Question` e `HAS_ANNOTATION`) entrou na migration `0008` e no worker de grafo; ver
+[ADR 0003](adr/0003-age-graph-projection.md). Nós de `Concept`/`Claim` e as arestas
+semânticas dependem de extração por modelo e seguem pendentes, assim como pgvector.
 
 ### Fase 3
 

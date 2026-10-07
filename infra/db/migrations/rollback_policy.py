@@ -29,6 +29,9 @@ DOWNGRADE_GUARDS: dict[str, tuple[tuple[str, ...], tuple[tuple[str, str], ...]]]
     "0007": (("study_session_viewed_pages",), (
         ("reading progress", "SELECT EXISTS (SELECT 1 FROM study_session_viewed_pages)"),
     )),
+    # O grafo AGE é projeção derivada e reconstruível a partir do PostgreSQL;
+    # drop_graph no downgrade pode descartá-lo sem perda de dado primário.
+    "0008": ((), ()),
 }
 
 

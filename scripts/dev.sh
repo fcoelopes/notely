@@ -93,6 +93,8 @@ backend/.venv/bin/python -m notely.workers.corpus --backfill &
 pids+=("$!")
 backend/.venv/bin/python -m notely.workers.curation &
 pids+=("$!")
+backend/.venv/bin/python -m notely.workers.graph &
+pids+=("$!")
 (cd frontend && exec ./node_modules/.bin/vite --host 127.0.0.1 --strictPort) &
 pids+=("$!")
 

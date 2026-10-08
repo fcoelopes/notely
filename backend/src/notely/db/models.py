@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import (
     Computed,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     SmallInteger,
@@ -290,3 +291,35 @@ class OutboxDeliveryRow(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class ConceptRow(Base):
+    __tablename__ = "concepts"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AnnotationConceptRow(Base):
+    """Relação anotação → conceito, sempre com proveniência e status explícitos."""
+
+    __tablename__ = "annotation_concepts"
+    __table_args__ = (UniqueConstraint("annotation_id", "concept_id", "relation"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    annotation_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("annotations.id", ondelete="CASCADE"), nullable=False
+    )
+    concept_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("concepts.id", ondelete="CASCADE"), nullable=False
+    )
+    relation: Mapped[str] = mapped_column(Text, nullable=False)
+    provenance: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

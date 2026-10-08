@@ -95,6 +95,8 @@ backend/.venv/bin/python -m notely.workers.curation &
 pids+=("$!")
 backend/.venv/bin/python -m notely.workers.graph &
 pids+=("$!")
+backend/.venv/bin/python -m notely.workers.concepts &
+pids+=("$!")
 (cd frontend && exec ./node_modules/.bin/vite --host 127.0.0.1 --strictPort) &
 pids+=("$!")
 

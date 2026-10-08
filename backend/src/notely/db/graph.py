@@ -22,6 +22,9 @@ DOCUMENT_LABEL = "Document"
 ANNOTATION_LABEL = "Annotation"
 QUESTION_LABEL = "Question"
 HAS_ANNOTATION = "HAS_ANNOTATION"
+CONCEPT_LABEL = "Concept"
+REFERS_TO = "REFERS_TO"
+QUESTIONS = "QUESTIONS"
 
 
 class AgeGraph:
@@ -74,6 +77,55 @@ class AgeGraph:
             },
         )
 
+    async def project_concept(
+        self, *, session: AsyncSession, concept_id: UUID, name: str
+    ) -> None:
+        query = (
+            f"MERGE (c:{CONCEPT_LABEL} {{source_id: $source_id}}) "
+            "SET c.source_type = 'concept', c.name = $name"
+        )
+        await self._run(session, query, {"source_id": str(concept_id), "name": name})
+
+    async def project_annotation_concept(
+        self,
+        *,
+        session: AsyncSession,
+        annotation_id: UUID,
+        annotation_type: str,
+        concept_id: UUID,
+        concept_name: str,
+        relation: str,
+        provenance: str,
+        status: str,
+    ) -> None:
+        """Projeta a aresta anotação → conceito, com proveniência e status explícitos.
+
+        O grafo guarda a inferência como inferência: `provenance` e `status` ficam na
+        aresta e distinguem o que o modelo sugeriu do que o usuário confirmou.
+        """
+        annotation_label = (
+            QUESTION_LABEL if annotation_type == "question" else ANNOTATION_LABEL
+        )
+        edge_label = QUESTIONS if relation == "questions" else REFERS_TO
+        query = (
+            f"MERGE (c:{CONCEPT_LABEL} {{source_id: $concept_id}}) "
+            "SET c.source_type = 'concept', c.name = $concept_name "
+            f"MERGE (a:{annotation_label} {{source_id: $annotation_id}}) "
+            f"MERGE (a)-[r:{edge_label}]->(c) "
+            "SET r.provenance = $provenance, r.status = $status"
+        )
+        await self._run(
+            session,
+            query,
+            {
+                "annotation_id": str(annotation_id),
+                "concept_id": str(concept_id),
+                "concept_name": concept_name,
+                "provenance": provenance,
+                "status": status,
+            },
+        )
+
     async def truncate(self, *, session: AsyncSession) -> None:
         """Remove todos os vértices e arestas do grafo (usado pelo rebuild)."""
         await self._run(session, "MATCH (n) DETACH DELETE n")
@@ -87,6 +139,11 @@ class AgeGraph:
 
     async def count_edges(self, *, session: AsyncSession) -> int:
         query = "MATCH ()-[r]->() RETURN count(r)"
+        value = await self._scalar(session, query)
+        return int(value)
+
+    async def count_labelled_edges(self, *, session: AsyncSession, label: str) -> int:
+        query = f"MATCH ()-[r:{label}]->() RETURN count(r)"
         value = await self._scalar(session, query)
         return int(value)
 

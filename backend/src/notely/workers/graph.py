@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from notely.db.graph import AgeGraph
-from notely.db.models import AnnotationRow, DocumentRow
+from notely.db.models import AnnotationConceptRow, AnnotationRow, ConceptRow, DocumentRow
 from notely.db.outbox import (
     CONSUMER_GRAPH,
     DEFAULT_BATCH_SIZE,
@@ -21,7 +21,9 @@ from notely.db.outbox import (
 
 logger = logging.getLogger("notely.workers.graph")
 
-PROJECTED_EVENT_TYPES = frozenset({"document.created", "annotation.created"})
+PROJECTED_EVENT_TYPES = frozenset(
+    {"document.created", "annotation.created", "concepts.extracted"}
+)
 
 DEFAULT_DATABASE_URL = "postgresql+asyncpg://notely:notely@localhost:5432/notely"
 
@@ -63,8 +65,46 @@ async def project_event(
         )
         return
 
+    if event.event_type == "concepts.extracted":
+        annotation_id = UUID(str(event.payload["annotation_id"]))
+        annotation = await session.get(AnnotationRow, annotation_id)
+        if annotation is None or annotation.deleted_at is not None:
+            return
+        await project_annotation_concepts(session=session, graph=graph, annotation=annotation)
+        return
+
     # Não reivindicamos outros tipos; se chegar aqui, nada a projetar.
     logger.warning("unprojectable event type %s ignored", event.event_type)
+
+
+async def project_annotation_concepts(
+    *, session: AsyncSession, graph: AgeGraph, annotation: AnnotationRow
+) -> int:
+    """Projeta os conceitos de uma anotação a partir do estado persistido no PostgreSQL."""
+    relations = (
+        await session.scalars(
+            select(AnnotationConceptRow).where(
+                AnnotationConceptRow.annotation_id == annotation.id
+            )
+        )
+    ).all()
+    projected = 0
+    for relation in relations:
+        concept = await session.get(ConceptRow, relation.concept_id)
+        if concept is None:
+            continue
+        await graph.project_annotation_concept(
+            session=session,
+            annotation_id=annotation.id,
+            annotation_type=annotation.type,
+            concept_id=concept.id,
+            concept_name=concept.name,
+            relation=relation.relation,
+            provenance=relation.provenance,
+            status=relation.status,
+        )
+        projected += 1
+    return projected
 
 
 async def run_batch(
@@ -137,6 +177,36 @@ async def rebuild(*, sessions: async_sessionmaker[AsyncSession], graph: AgeGraph
                 annotation_type=annotation.type,
                 page_number=annotation.page_number,
                 document_title=document.title,
+            )
+            projected += 1
+        # Conceitos e relações anotação → conceito, reconstruídos do PostgreSQL.
+        concepts = (
+            await session.scalars(select(ConceptRow).order_by(ConceptRow.normalized_name))
+        ).all()
+        for concept in concepts:
+            await graph.project_concept(
+                session=session, concept_id=concept.id, name=concept.name
+            )
+            projected += 1
+        relations = (
+            await session.scalars(
+                select(AnnotationConceptRow).order_by(AnnotationConceptRow.created_at)
+            )
+        ).all()
+        for relation in relations:
+            annotation = await session.get(AnnotationRow, relation.annotation_id)
+            concept = await session.get(ConceptRow, relation.concept_id)
+            if annotation is None or annotation.deleted_at is not None or concept is None:
+                continue
+            await graph.project_annotation_concept(
+                session=session,
+                annotation_id=annotation.id,
+                annotation_type=annotation.type,
+                concept_id=concept.id,
+                concept_name=concept.name,
+                relation=relation.relation,
+                provenance=relation.provenance,
+                status=relation.status,
             )
             projected += 1
         await session.commit()

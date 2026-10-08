@@ -35,6 +35,11 @@ DOWNGRADE_GUARDS: dict[str, tuple[tuple[str, ...], tuple[tuple[str, str], ...]]]
     # O estado de entrega é derivado do log de eventos, que permanece intacto; o código
     # anterior volta a decidir por outbox_events.processed_at.
     "0009": ((), ()),
+    # Relação apenas sugerida é reconstruível a partir da anotação; relação aceita pelo
+    # usuário é dado autoral e não pode ser descartada por um downgrade.
+    "0010": (("concepts", "annotation_concepts"), (
+        ("accepted concept relations", "SELECT EXISTS (SELECT 1 FROM annotation_concepts WHERE status = 'accepted')"),
+    )),
 }
 
 

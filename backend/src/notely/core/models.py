@@ -54,6 +54,26 @@ class AISuggestionType(StrEnum):
     STUDY_SESSION_THEME = "study_session_theme"
 
 
+class ConceptRelation(StrEnum):
+    """Como uma anotação se liga a um conceito."""
+
+    REFERS_TO = "refers_to"
+    QUESTIONS = "questions"
+
+
+class RelationProvenance(StrEnum):
+    """De onde a relação veio. Inferência nunca se apresenta como autoral."""
+
+    AI_INFERENCE = "ai_inference"
+    USER_CONFIRMED = "user_confirmed"
+
+
+class RelationStatus(StrEnum):
+    SUGGESTED = "suggested"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
 @dataclass(frozen=True, slots=True)
 class Document:
     sha256: str
@@ -263,4 +283,50 @@ class OutboxEvent:
     id: UUID = field(default_factory=uuid4)
     created_at: datetime = field(default_factory=utc_now)
     available_at: datetime = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True, slots=True)
+class Concept:
+    """Conceito nomeado. Vive no PostgreSQL; o grafo recebe apenas a projeção."""
+
+    name: str
+    normalized_name: str
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("concept name is required")
+        if not self.normalized_name.strip():
+            raise ValueError("concept normalized_name is required")
+
+
+@dataclass(frozen=True, slots=True)
+class AnnotationConcept:
+    """Relação entre uma anotação e um conceito, com proveniência explícita.
+
+    Nasce como inferência de modelo e só passa a autoral por aceite do usuário
+    (AGENTS.md §1). Enquanto sugerida, não representa o que o usuário afirmou.
+    """
+
+    annotation_id: UUID
+    concept_id: UUID
+    relation: ConceptRelation
+    provider: str
+    model: str
+    provenance: RelationProvenance = RelationProvenance.AI_INFERENCE
+    status: RelationStatus = RelationStatus.SUGGESTED
+    confidence: float | None = None
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utc_now)
+    accepted_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        for label, value in (("provider", self.provider), ("model", self.model)):
+            if not value.strip():
+                raise ValueError(f"{label} is required for an extracted relation")
+        if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        if (self.status is RelationStatus.ACCEPTED) != (self.accepted_at is not None):
+            raise ValueError("accepted_at must be set only for accepted relations")
 

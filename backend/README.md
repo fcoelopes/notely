@@ -162,3 +162,32 @@ consumidos pelos workers existentes), então a projeção inicial do acervo exis
 `--rebuild`. Novas anotações são projetadas pelo worker em execução. O grafo é
 reconstruível: apagá-lo e rodar `--rebuild` reproduz o estado a partir do PostgreSQL. Ver
 [ADR 0003](../docs/adr/0003-age-graph-projection.md).
+
+## Conceitos extraídos das anotações (issue #10)
+
+O worker de conceitos consome `annotation.created`, extrai conceitos por um provider
+configurável e grava as relações anotação → conceito em PostgreSQL como **inferência**
+(`ai_inference` / `suggested`). Em seguida publica `concepts.extracted`, e o worker de
+grafo projeta os nós `Concept` e as arestas `REFERS_TO`/`QUESTIONS`:
+
+```bash
+uv run --project backend python -m notely.workers.concepts --once
+uv run --project backend python -m notely.workers.concepts
+uv run --project backend python -m notely.workers.concepts --backfill --once
+```
+
+O provider padrão é determinístico e local (`heuristic`), sem rede. Para usar um modelo
+com a própria chave (BYOK):
+
+```bash
+NOTELY_CONCEPT_PROVIDER=anthropic NOTELY_CONCEPT_MODEL=claude-... NOTELY_CONCEPT_API_KEY=... \
+  uv run --project backend python -m notely.workers.concepts
+```
+
+Use `NOTELY_CONCEPT_PROVIDER=openai_compatible` com `NOTELY_CONCEPT_ENDPOINT` para
+endpoints compatíveis. Anotações anteriores a esta entrega não são extraídas
+automaticamente: use `--backfill`, que enfileira só as anotações ainda sem conceitos.
+
+Nada é promovido a conhecimento autoral sem aceite explícito do usuário: as relações
+nascem `suggested` e a promoção grava `accepted_at`. Ver
+[ADR 0005](../docs/adr/0005-concept-extraction-as-inference.md).

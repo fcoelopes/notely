@@ -1044,9 +1044,12 @@ Workers → reader_events + pgvector + AGE.
 
 Entregue parcialmente: worker de `reader_events` em TimescaleDB, sessões de leitura e
 `passage_id` versionado. A projeção estrutural no AGE (`Document`, `Annotation`,
-`Question` e `HAS_ANNOTATION`) entrou na migration `0008` e no worker de grafo; ver
-[ADR 0003](adr/0003-age-graph-projection.md). Nós de `Concept`/`Claim` e as arestas
-semânticas dependem de extração por modelo e seguem pendentes, assim como pgvector.
+`Question` e `HAS_ANNOTATION`) entrou na migration `0008` e no worker de grafo
+([ADR 0003](adr/0003-age-graph-projection.md)); a extração de conceitos por provider, com
+nós `Concept` e arestas `REFERS_TO`/`QUESTIONS` marcadas como inferência, entrou na
+migration `0010` e no worker de conceitos ([ADR 0005](adr/0005-concept-extraction-as-inference.md)).
+Nós de `Claim` e as arestas `SUPPORTS`/`CONTRADICTS`/`RELATED_TO`/`ANSWERED_BY` seguem
+pendentes, assim como pgvector.
 
 ### Fase 3
 

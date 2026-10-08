@@ -74,6 +74,13 @@ class RelationStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class SessionStage(StrEnum):
+    """Uma sessão nasce pendente de MFA e só vira ativa depois do segundo fator."""
+
+    MFA_PENDING = "mfa_pending"
+    ACTIVE = "active"
+
+
 @dataclass(frozen=True, slots=True)
 class Document:
     sha256: str
@@ -329,4 +336,70 @@ class AnnotationConcept:
             raise ValueError("confidence must be between 0 and 1")
         if (self.status is RelationStatus.ACCEPTED) != (self.accepted_at is not None):
             raise ValueError("accepted_at must be set only for accepted relations")
+
+
+@dataclass(frozen=True, slots=True)
+class User:
+    """Conta do usuário. A senha é opcional até o bootstrap definir uma."""
+
+    email: str
+    normalized_email: str
+    password_hash: str | None = None
+    totp_secret_encrypted: str | None = None
+    totp_enabled: bool = False
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    deleted_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not self.email.strip():
+            raise ValueError("email is required")
+        if not self.normalized_email.strip():
+            raise ValueError("normalized_email is required")
+        if self.totp_enabled and not self.totp_secret_encrypted:
+            raise ValueError("totp_enabled requires a stored secret")
+
+
+@dataclass(frozen=True, slots=True)
+class AuthSession:
+    """Sessão opaca. O token em claro só existe no cookie do cliente."""
+
+    user_id: UUID
+    token_hash: str
+    expires_at: datetime
+    stage: SessionStage = SessionStage.ACTIVE
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utc_now)
+    revoked_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not self.token_hash.strip():
+            raise ValueError("token_hash is required")
+
+    def is_valid_at(self, moment: datetime) -> bool:
+        return (
+            self.stage is SessionStage.ACTIVE
+            and self.revoked_at is None
+            and self.expires_at > moment
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryCode:
+    """Código de recuperação de uso único, guardado apenas como hash."""
+
+    user_id: UUID
+    code_hash: str
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utc_now)
+    used_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not self.code_hash.strip():
+            raise ValueError("code_hash is required")
+
+    @property
+    def is_used(self) -> bool:
+        return self.used_at is not None
 

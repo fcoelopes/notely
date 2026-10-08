@@ -99,7 +99,10 @@ async def _upsert_concept(session: AsyncSession, concept: ExtractedConcept) -> U
             normalized_name=normalized,
             created_at=utc_now(),
         )
-        .on_conflict_do_update(index_elements=["normalized_name"], set_={"name": concept.name})
+        # O conceito pertence a um usuário: a unicidade é (user_id, normalized_name).
+        .on_conflict_do_update(
+            index_elements=["user_id", "normalized_name"], set_={"name": concept.name}
+        )
         .returning(ConceptRow.id)
     )
     return (await session.execute(statement)).scalar_one()

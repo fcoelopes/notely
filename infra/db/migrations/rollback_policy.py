@@ -40,6 +40,13 @@ DOWNGRADE_GUARDS: dict[str, tuple[tuple[str, ...], tuple[tuple[str, str], ...]]]
     "0010": (("concepts", "annotation_concepts"), (
         ("accepted concept relations", "SELECT EXISTS (SELECT 1 FROM annotation_concepts WHERE status = 'accepted')"),
     )),
+    # Descartar a identidade com contas reais deixaria o usuário sem acesso ao próprio
+    # acervo; o dono provisório sem senha não conta como conta.
+    "0011": (("users", "auth_sessions", "recovery_codes"), (
+        ("user accounts", "SELECT EXISTS (SELECT 1 FROM users WHERE password_hash IS NOT NULL)"),
+        ("sessions", "SELECT EXISTS (SELECT 1 FROM auth_sessions)"),
+        ("recovery codes", "SELECT EXISTS (SELECT 1 FROM recovery_codes)"),
+    )),
 }
 
 

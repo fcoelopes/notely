@@ -33,19 +33,6 @@ def parent_of(revision: str) -> str:
     return parent
 
 
-def revision_path_to(target: str) -> list[str]:
-    """Revisões a descer, uma por vez, do head até (excluindo) ``target``."""
-    script = _script()
-    path: list[str] = []
-    current = script.get_current_head()
-    while current != target:
-        path.append(current)
-        parent = script.get_revision(current).down_revision
-        assert isinstance(parent, str), f"{target} is not an ancestor of the head"
-        current = parent
-    return path
-
-
 def docker(*args: str, input: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["docker", "compose", "exec", "-T", "postgres", *args],
@@ -184,16 +171,17 @@ def test_downgrade_cannot_discard_reading_progress(database: str, tmp_path: Path
                              "(study_session_id, document_id, page_number, first_viewed_at) VALUES "
                              f"('{session_id}', '{document_id}', 1, now());"))
     assert inserted.returncode == 0, inserted.stderr
-    # O rollback desce uma revisão por vez: caminha do head até 0007, a revisão cujo
-    # down descartaria o progresso de leitura.
-    for revision in revision_path_to("0007"):
-        stepped = subprocess.run(
-            [sys.executable, str(ROLLBACK), "--database", database,
-             "--target", parent_of(revision),
-             "--backup-dir", str(tmp_path), "--execute"],
-            text=True, capture_output=True, cwd=ROOT, check=False,
-        )
-        assert stepped.returncode == 0, stepped.stderr
+    # Desce direto até a revisão que protege o progresso. Usar o script de rollback passo a
+    # passo faria backup e restore completos por revisão, e o custo cresce a cada migration.
+    environment = os.environ | {
+        "NOTELY_DATABASE_URL": f"postgresql+asyncpg://notely:notely@localhost:5432/{database}"
+    }
+    stepped = subprocess.run(
+        [str(ROOT / "backend" / ".venv" / "bin" / "alembic"), "-c", "alembic.ini",
+         "downgrade", "0007"],
+        text=True, capture_output=True, cwd=ROOT, env=environment, check=False,
+    )
+    assert stepped.returncode == 0, stepped.stderr
     dumps = len(list(tmp_path.glob("*.dump")))
     preview = subprocess.run(
         [sys.executable, str(ROLLBACK), "--database", database, "--target", "0006",

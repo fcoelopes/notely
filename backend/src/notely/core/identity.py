@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import re
 from datetime import timedelta
+from uuid import UUID
 
 MAX_EMAIL_LENGTH = 254
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# Dono provisório criado pela migration 0011: a senha é definida pelo comando de bootstrap.
+BOOTSTRAP_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+BOOTSTRAP_EMAIL = "owner@notely.local"
 
 LOCKOUT_WINDOW = timedelta(minutes=15)
 MAX_FAILED_ATTEMPTS = 5

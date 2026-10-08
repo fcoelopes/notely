@@ -8,6 +8,7 @@ from uuid import UUID
 from notely.core.models import (
     AISuggestion,
     Annotation,
+    AuthSession,
     CurationRequest,
     CuratedSource,
     Document,
@@ -15,7 +16,53 @@ from notely.core.models import (
     ReadingSession,
     StudySession,
     StudySessionDocument,
+    User,
 )
+
+
+class IdentityStore(Protocol):
+    """Persistência de contas, sessões, recuperação e tentativas de login."""
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+    async def get_user(self, user_id: UUID) -> User | None: ...
+
+    async def get_user_by_email(self, normalized_email: str) -> User | None: ...
+
+    async def list_users(self) -> list[User]: ...
+
+    async def add_user(self, user: User) -> None: ...
+
+    async def update_user(self, user: User) -> None: ...
+
+    async def add_session(self, session: AuthSession) -> None: ...
+
+    async def get_session(self, token_hash: str) -> AuthSession | None: ...
+
+    async def update_session(self, session: AuthSession) -> None: ...
+
+    async def replace_recovery_codes(
+        self, *, user_id: UUID, code_hashes: list[str], created_at: datetime
+    ) -> None: ...
+
+    async def consume_recovery_code(
+        self, *, user_id: UUID, code_hash: str, used_at: datetime
+    ) -> bool: ...
+
+    async def record_login_attempt(
+        self, *, normalized_email: str, succeeded: bool, at: datetime
+    ) -> None: ...
+
+    async def count_recent_failures(self, *, normalized_email: str, since: datetime) -> int: ...
+
+    async def commit(self) -> None: ...
 
 
 class UnitOfWork(Protocol):

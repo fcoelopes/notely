@@ -70,6 +70,12 @@ O worker reivindica apenas os eventos temporais (`reading.started`, `reading.end
 `ON CONFLICT (event_id, time)` e usa backoff exponencial com `attempt_count`/`available_at`.
 Eventos de outros consumidores permanecem pendentes e não ocupam o lote.
 
+A entrega é **por consumidor**: `outbox_deliveries` guarda o estado de cada worker para
+cada evento, então o mesmo `annotation.created` alimenta a trilha temporal, o índice do
+corpus e o grafo, cada um com retry independente. Um consumidor novo precisa ser adotado
+pela migration que o introduz, para não reprojetar o acervo inteiro. Ver
+[ADR 0004](../docs/adr/0004-outbox-delivery-per-consumer.md).
+
 ## Testar
 
 ```bash

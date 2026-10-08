@@ -20,14 +20,16 @@ from collections.abc import AsyncIterator
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from notely.core.models import AnnotationType
 from notely.core.services import NotelyService
 from notely.db.graph import AgeGraph
+from notely.db.models import ReaderEventRow
 from notely.db.outbox import SqlAlchemyOutboxStore
 from notely.db.uow import SqlAlchemyUnitOfWork
+from notely.workers import timescale
 from notely.workers.graph import rebuild, run_batch
 
 TEST_DATABASE_URL = os.environ.get(
@@ -145,7 +147,10 @@ async def test_projection_survives_a_retry_without_duplicates(context: Integrati
     # Simula retry: o processo morreu depois de projetar, antes de marcar como processado.
     async with context.sessions() as db:
         await db.execute(
-            text("update outbox_events set processed_at = null, claimed_at = null, attempt_count = 0")
+            text(
+                "update outbox_deliveries set processed_at = null, claimed_at = null, "
+                "attempt_count = 0 where consumer = 'graph'"
+            )
         )
         await db.commit()
 
@@ -174,3 +179,36 @@ async def test_rebuild_reproduces_the_graph_from_postgresql(
     projected = await rebuild(sessions=context.sessions, graph=context.graph)
     assert projected == 3  # 1 documento + 2 anotações
     assert await _counts(context) == incremental
+
+
+async def test_graph_and_timeline_both_receive_the_same_event(
+    context: IntegrationContext,
+) -> None:
+    """Fan-out do outbox: a projeção de um consumidor não consome o evento do outro.
+
+    Regressão: com decisão de entrega compartilhada, o worker de TimescaleDB levava o
+    `annotation.created` e o grafo ficava sem o nó da anotação.
+    """
+    document_id = await _register_document(context)
+    annotation_id = await _create_annotation(context, document_id, AnnotationType.HIGHLIGHT)
+
+    timeline = await timescale.run_batch(store=context.store, sessions=context.sessions)
+    graph = await run_batch(store=context.store, sessions=context.sessions, graph=context.graph)
+
+    assert timeline["projected"] == 1  # a trilha temporal recebeu a anotação
+    assert graph["projected"] == 2  # o grafo recebeu documento e anotação
+
+    async with context.sessions() as db:
+        timeline_rows = (
+            await db.scalars(
+                select(ReaderEventRow).where(ReaderEventRow.annotation_id == annotation_id)
+            )
+        ).all()
+
+    assert len(timeline_rows) == 1
+    assert await _counts(context) == {
+        "documents": 1,
+        "annotations": 1,
+        "questions": 0,
+        "edges": 1,
+    }

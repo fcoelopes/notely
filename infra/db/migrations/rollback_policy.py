@@ -32,6 +32,9 @@ DOWNGRADE_GUARDS: dict[str, tuple[tuple[str, ...], tuple[tuple[str, str], ...]]]
     # O grafo AGE é projeção derivada e reconstruível a partir do PostgreSQL;
     # drop_graph no downgrade pode descartá-lo sem perda de dado primário.
     "0008": ((), ()),
+    # O estado de entrega é derivado do log de eventos, que permanece intacto; o código
+    # anterior volta a decidir por outbox_events.processed_at.
+    "0009": ((), ()),
 }
 
 

@@ -21,7 +21,13 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection) -> None:
-    context.configure(connection=connection, target_metadata=None)
+    # Uma migration por transação: a `0008` usa `autocommit_block()`, que commita
+    # incondicionalmente a transação corrente. Com transação única para toda a cadeia, as
+    # revisões anteriores ficariam commitadas antes do fim do run, sem relação consistente
+    # com a versão registrada. É a configuração recomendada pelo Alembic nesse caso.
+    context.configure(
+        connection=connection, target_metadata=None, transaction_per_migration=True
+    )
     with context.begin_transaction():
         context.run_migrations()
 

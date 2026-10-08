@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from notely.db.graph import AgeGraph
 from notely.db.models import AnnotationRow, DocumentRow
-from notely.db.outbox import DEFAULT_BATCH_SIZE, ClaimedEvent, SqlAlchemyOutboxStore
+from notely.db.outbox import (
+    CONSUMER_GRAPH,
+    DEFAULT_BATCH_SIZE,
+    ClaimedEvent,
+    SqlAlchemyOutboxStore,
+)
 
 logger = logging.getLogger("notely.workers.graph")
 
@@ -72,7 +77,10 @@ async def run_batch(
     stats = {"claimed": 0, "projected": 0, "failed": 0}
     async with sessions() as session:
         claimed = await store.claim(
-            session=session, batch_size=batch_size, event_types=PROJECTED_EVENT_TYPES
+            session=session,
+            consumer=CONSUMER_GRAPH,
+            batch_size=batch_size,
+            event_types=PROJECTED_EVENT_TYPES,
         )
         stats["claimed"] = len(claimed)
         if not claimed:
@@ -85,12 +93,14 @@ async def run_batch(
                 await project_event(session=session, graph=graph, event=event)
             except Exception as exc:  # noqa: BLE001 - registra e reprocessa com backoff
                 stats["failed"] += 1
-                await store.mark_failed(session=session, event_id=event.id, error=str(exc))
+                await store.mark_failed(
+                    session=session, event_id=event.id, consumer=CONSUMER_GRAPH, error=str(exc)
+                )
                 continue
             projected_ids.append(event.id)
 
         for event_id in projected_ids:
-            await store.mark_processed(session=session, event_id=event_id)
+            await store.mark_processed(session=session, event_id=event_id, consumer=CONSUMER_GRAPH)
         stats["projected"] = len(projected_ids)
         await session.commit()
     return stats

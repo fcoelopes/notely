@@ -262,7 +262,31 @@ class OutboxEventRow(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Estado mantido apenas para o histórico anterior ao fan-out. A decisão de entrega
+    # vive em outbox_deliveries; estas colunas não são lidas nem escritas.
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class OutboxDeliveryRow(Base):
+    """Entrega de um evento a um consumidor.
+
+    Mais de um worker projeta o mesmo evento; o retry e o backoff de um consumidor não
+    interferem no outro. Ver ``docs/adr/0004``.
+    """
+
+    __tablename__ = "outbox_deliveries"
+
+    event_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("outbox_events.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    consumer: Mapped[str] = mapped_column(Text, primary_key=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text)

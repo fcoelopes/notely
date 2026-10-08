@@ -12,8 +12,13 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from notely.core.services import NotelyService
-from notely.db.models import DocumentCorpusIndexRow, DocumentCorpusPageRow, OutboxEventRow
-from notely.db.outbox import SqlAlchemyOutboxStore
+from notely.db.models import (
+    DocumentCorpusIndexRow,
+    DocumentCorpusPageRow,
+    OutboxDeliveryRow,
+    OutboxEventRow,
+)
+from notely.db.outbox import CONSUMER_CORPUS, SqlAlchemyOutboxStore
 from notely.db.uow import SqlAlchemyUnitOfWork
 from notely.workers.corpus import enqueue_missing_documents, run_batch
 from test_corpus import sample_pdf
@@ -82,9 +87,12 @@ async def test_indexes_text_and_retry_does_not_duplicate_pages(context) -> None:
                 )
             )
         ) == 1
-        event = await db.scalar(select(OutboxEventRow))
-        assert event is not None
-        event.processed_at = None
+        delivery = await db.scalar(
+            select(OutboxDeliveryRow).where(OutboxDeliveryRow.consumer == CONSUMER_CORPUS)
+        )
+        assert delivery is not None
+        delivery.processed_at = None
+        delivery.claimed_at = None
         await db.commit()
 
     retry = await run_batch(store=store, sessions=context, storage=storage)  # type: ignore[arg-type]
@@ -133,7 +141,15 @@ async def test_backfill_queues_missing_document_once(context) -> None:
     async with context() as db:
         event = await db.scalar(select(OutboxEventRow))
         assert event is not None
-        event.processed_at = event.created_at
+        # Simula a entrega já resolvida pelo consumidor de corpus.
+        db.add(
+            OutboxDeliveryRow(
+                event_id=event.id,
+                consumer=CONSUMER_CORPUS,
+                processed_at=event.created_at,
+                available_at=event.created_at,
+            )
+        )
         await db.commit()
 
     async with context() as db:

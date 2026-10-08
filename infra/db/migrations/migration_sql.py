@@ -15,6 +15,10 @@ def execute_sql(filename: str) -> None:
     if len(statements) < 2 or statements[0].strip().upper() != "BEGIN;" or statements[-1].strip().upper() != "COMMIT;":
         raise ValueError(f"Expected a transactional SQL migration: {filename}")
     connection = op.get_bind()
+    # O grafo do AGE cria um schema com o mesmo nome do usuário (`notely`), e o
+    # `search_path` default `"$user", public` passaria a resolver DDL não qualificado
+    # para dentro desse schema. As migrations sempre miram `public`.
+    connection.exec_driver_sql("SET search_path = public")
     if filename.endswith(".down.sql"):
         protect_downgrade(filename.split("_", 1)[0])
     for statement in statements[1:-1]:

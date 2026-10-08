@@ -18,8 +18,14 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from notely.api.app import create_app
 from notely.core.models import AnnotationType
 from notely.core.services import NotelyService
-from notely.db.models import CuratedSourceRow, CurationRequestRow, DocumentCorpusIndexRow, OutboxEventRow
-from notely.db.outbox import SqlAlchemyOutboxStore
+from notely.db.models import (
+    CuratedSourceRow,
+    CurationRequestRow,
+    DocumentCorpusIndexRow,
+    OutboxDeliveryRow,
+    OutboxEventRow,
+)
+from notely.db.outbox import CONSUMER_CURATION, SqlAlchemyOutboxStore
 from notely.db.uow import SqlAlchemyUnitOfWork
 from notely.workers.corpus import run_batch as index_batch
 from notely.workers.curation import run_batch as curate_batch
@@ -137,11 +143,12 @@ async def test_question_gets_verified_sources_only_from_its_session(context) -> 
     assert wrong_scope.status_code == 404
 
     async with context() as db:
-        event = await db.scalar(select(OutboxEventRow).where(
-            OutboxEventRow.event_type == "question.curation.requested"
-        ))
-        assert event is not None
-        event.processed_at = None
+        delivery = await db.scalar(
+            select(OutboxDeliveryRow).where(OutboxDeliveryRow.consumer == CONSUMER_CURATION)
+        )
+        assert delivery is not None
+        delivery.processed_at = None
+        delivery.claimed_at = None
         await db.commit()
     await curate_batch(store=SqlAlchemyOutboxStore(context), sessions=context)
     async with context() as db:

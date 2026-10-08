@@ -9,10 +9,41 @@ import sys
 from uuid import uuid4
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "migrate.py"
 ROLLBACK = ROOT / "scripts" / "rollback.py"
+
+
+def _script() -> ScriptDirectory:
+    return ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+
+
+# Head atual do histórico: os testes derivam a revisão esperada em vez de fixá-la, para
+# que uma migration nova não exija reescrevê-los.
+HEAD = _script().get_current_head()
+
+
+def parent_of(revision: str) -> str:
+    """Revisão imediatamente anterior, já que o rollback desce um passo por vez."""
+    parent = _script().get_revision(revision).down_revision
+    assert isinstance(parent, str), f"{revision} has no linear parent revision"
+    return parent
+
+
+def revision_path_to(target: str) -> list[str]:
+    """Revisões a descer, uma por vez, do head até (excluindo) ``target``."""
+    script = _script()
+    path: list[str] = []
+    current = script.get_current_head()
+    while current != target:
+        path.append(current)
+        parent = script.get_revision(current).down_revision
+        assert isinstance(parent, str), f"{target} is not an ancestor of the head"
+        current = parent
+    return path
 
 
 def docker(*args: str, input: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -48,14 +79,27 @@ def migrate(name: str, backup_dir: Path) -> subprocess.CompletedProcess[str]:
 def test_new_database_is_migrated_once(database: str, tmp_path: Path) -> None:
     first = migrate(database, tmp_path)
     assert first.returncode == 0, first.stderr
-    assert "Alembic revision 0008: current" in first.stdout
+    assert f"Alembic revision {HEAD}: current" in first.stdout
     second = migrate(database, tmp_path)
     assert second.returncode == 0, second.stderr
-    assert "Alembic revision 0008: current" in second.stdout
+    assert f"Alembic revision {HEAD}: current" in second.stdout
     assert list(tmp_path.glob("*.dump")) == []
     result = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
                     "select version_num from alembic_version")
-    assert result.stdout.strip() == "0008"
+    assert result.stdout.strip() == HEAD
+
+    # Regressão: o grafo do AGE cria um schema com o nome do usuário (`notely`), e o
+    # `search_path` default `"$user", public` desviaria DDL não qualificado para lá. As
+    # tabelas de domínio precisam ficar em `public`.
+    misplaced = docker(
+        "psql", "-U", "notely", "-d", database, "-At", "-c",
+        "select n.nspname || '.' || c.relname from pg_class c "
+        "join pg_namespace n on n.oid = c.relnamespace "
+        "where c.relname in ('documents', 'annotations', 'outbox_events', "
+        "'outbox_deliveries', 'study_sessions', 'reader_events') "
+        "and n.nspname <> 'public'",
+    )
+    assert misplaced.stdout.strip() == ""
 
 
 def test_existing_database_receives_only_missing_migrations(database: str, tmp_path: Path) -> None:
@@ -73,11 +117,11 @@ def test_existing_database_receives_only_missing_migrations(database: str, tmp_p
     result = migrate(database, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "Legacy schema registered at Alembic revision 0003" in result.stdout
-    assert "Alembic revision 0008: current" in result.stdout
+    assert f"Alembic revision {HEAD}: current" in result.stdout
     assert len(list(tmp_path.glob("*.dump"))) == 1
     version = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
                      "select version_num from alembic_version")
-    assert version.stdout.strip() == "0008"
+    assert version.stdout.strip() == HEAD
     preserved = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
                        f"select title from documents where id = '{document_id}'")
     assert preserved.stdout.strip() == "Preserve me"
@@ -85,30 +129,33 @@ def test_existing_database_receives_only_missing_migrations(database: str, tmp_p
 
 def test_alembic_downgrade_and_upgrade(database: str, tmp_path: Path) -> None:
     assert migrate(database, tmp_path).returncode == 0
+    # Um passo a partir do head. O conteúdo do down de cada revisão é coberto pelos seus
+    # próprios testes; aqui validamos o ciclo com prévia, backup e re-upgrade.
+    previous = parent_of(HEAD)
     preview = subprocess.run(
-        [sys.executable, str(ROLLBACK), "--database", database, "--target", "0007"],
+        [sys.executable, str(ROLLBACK), "--database", database, "--target", previous],
         text=True, capture_output=True, cwd=ROOT, check=False,
     )
     assert preview.returncode == 0, preview.stderr
     assert "Preview only" in preview.stdout
     assert list(tmp_path.glob("*.dump")) == []
     downgraded = subprocess.run(
-        [sys.executable, str(ROLLBACK), "--database", database, "--target", "0007",
+        [sys.executable, str(ROLLBACK), "--database", database, "--target", previous,
          "--backup-dir", str(tmp_path), "--execute"],
         text=True, capture_output=True, cwd=ROOT, check=False,
     )
     assert downgraded.returncode == 0, downgraded.stderr
     assert "Backup and full restore verified" in downgraded.stdout
-    # A revisão 0008 é projeção derivada: o down remove a extensão e o grafo AGE.
-    missing = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
-                     "select count(*) from pg_extension where extname = 'age'")
-    assert missing.stdout.strip() == "0"
+    assert "Rollback complete" in downgraded.stdout
+    stepped = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
+                     "select version_num from alembic_version")
+    assert stepped.stdout.strip() == previous
     upgraded = migrate(database, tmp_path)
     assert upgraded.returncode == 0, upgraded.stderr
     assert len(list(tmp_path.glob("*.dump"))) == 2
     restored = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
                       "select version_num from alembic_version")
-    assert restored.stdout.strip() == "0008"
+    assert restored.stdout.strip() == HEAD
 
 
 def test_partial_schema_is_not_modified(database: str, tmp_path: Path) -> None:
@@ -137,14 +184,16 @@ def test_downgrade_cannot_discard_reading_progress(database: str, tmp_path: Path
                              "(study_session_id, document_id, page_number, first_viewed_at) VALUES "
                              f"('{session_id}', '{document_id}', 1, now());"))
     assert inserted.returncode == 0, inserted.stderr
-    # O rollback desce uma revisão por vez: 0008 -> 0007 primeiro, para chegar à
-    # revisão cujo down descartaria o progresso de leitura.
-    stepped = subprocess.run(
-        [sys.executable, str(ROLLBACK), "--database", database, "--target", "0007",
-         "--backup-dir", str(tmp_path), "--execute"],
-        text=True, capture_output=True, cwd=ROOT, check=False,
-    )
-    assert stepped.returncode == 0, stepped.stderr
+    # O rollback desce uma revisão por vez: caminha do head até 0007, a revisão cujo
+    # down descartaria o progresso de leitura.
+    for revision in revision_path_to("0007"):
+        stepped = subprocess.run(
+            [sys.executable, str(ROLLBACK), "--database", database,
+             "--target", parent_of(revision),
+             "--backup-dir", str(tmp_path), "--execute"],
+            text=True, capture_output=True, cwd=ROOT, check=False,
+        )
+        assert stepped.returncode == 0, stepped.stderr
     dumps = len(list(tmp_path.glob("*.dump")))
     preview = subprocess.run(
         [sys.executable, str(ROLLBACK), "--database", database, "--target", "0006",
@@ -203,7 +252,7 @@ def test_backup_restores_to_new_database_and_startup_can_use_it(database: str, t
             text=True, capture_output=True, cwd=ROOT, check=False,
         )
         assert restored.returncode == 0, restored.stderr
-        assert "Alembic revision: 0008" in restored.stdout
+        assert f"Alembic revision: {HEAD}" in restored.stdout
         refused = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "restore_backup.py"), str(archive),
              "--database", recovered],
@@ -218,7 +267,7 @@ def test_backup_restores_to_new_database_and_startup_can_use_it(database: str, t
             text=True, capture_output=True, cwd=ROOT, env=environment, check=False,
         )
         assert started.returncode == 0, started.stderr
-        assert "Alembic revision 0008: current" in started.stdout
+        assert f"Alembic revision {HEAD}: current" in started.stdout
         document = docker("psql", "-U", "notely", "-d", recovered, "-At", "-c",
                           f"select title from documents where id = '{document_id}'")
         assert document.stdout.strip() == "Recovered"

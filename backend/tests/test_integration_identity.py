@@ -108,27 +108,35 @@ async def test_owned_tables_require_an_owner_and_derived_tables_do_not(
         assert table not in nullable, f"{table} should resolve its owner from the origin"
 
 
-async def test_writes_without_an_explicit_owner_fall_back_to_the_bootstrap_user(
+async def test_writes_without_an_explicit_owner_are_rejected(
     sessions: async_sessionmaker[AsyncSession],
 ) -> None:
-    """O default é transitório: mantém a aplicação funcionando durante a migração."""
-    document_id = uuid4()
+    """Sem default transitório, esquecer o dono falha em vez de atribuir em silêncio."""
     async with sessions() as db:
-        await db.execute(
-            text(
-                "insert into documents (id, sha256, title, filename, page_count, "
-                "storage_uri, created_at, updated_at) values "
-                "(:id, :sha, 'Sem dono explícito', 'x.pdf', 1, 'test://pdf', now(), now())"
-            ),
-            {"id": document_id, "sha": uuid4().hex + uuid4().hex},
-        )
-        await db.commit()
-        owner = await db.scalar(
-            text("select user_id from documents where id = :id"), {"id": document_id}
-        )
-        await db.execute(text("delete from documents where id = :id"), {"id": document_id})
-        await db.commit()
-    assert owner == BOOTSTRAP_USER
+        with pytest.raises(Exception) as missing_owner:
+            await db.execute(
+                text(
+                    "insert into documents (id, sha256, title, filename, page_count, "
+                    "storage_uri, created_at, updated_at) values "
+                    "(:id, :sha, 'Sem dono explícito', 'x.pdf', 1, 'test://pdf', now(), now())"
+                ),
+                {"id": uuid4(), "sha": uuid4().hex + uuid4().hex},
+            )
+        assert "user_id" in str(missing_owner.value)
+        await db.rollback()
+
+    # E nenhuma tabela de domínio mantém default de dono.
+    async with sessions() as db:
+        defaults = (
+            await db.execute(
+                text(
+                    "select table_name from information_schema.columns "
+                    "where table_schema = 'public' and column_name = 'user_id' "
+                    "and column_default is not null"
+                )
+            )
+        ).all()
+    assert defaults == []
 
 
 async def test_email_is_unique_when_normalized(

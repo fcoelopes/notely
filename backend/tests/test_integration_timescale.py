@@ -237,15 +237,17 @@ async def test_failed_projection_is_recorded_and_retried_later(
             text(
                 """
                 insert into outbox_events (
-                    id, aggregate_type, aggregate_id, event_type, payload, created_at, available_at
+                    id, user_id, aggregate_type, aggregate_id, event_type, payload,
+                    created_at, available_at
                 ) values (
-                    :id, 'reading_session', :aggregate_id, 'reading.started', cast(:payload as jsonb),
-                    :now, :now
+                    :id, :user, 'reading_session', :aggregate_id, 'reading.started',
+                    cast(:payload as jsonb), :now, :now
                 )
                 """
             ),
             {
                 "id": broken_event_id,
+                "user": TEST_USER_ID,
                 "aggregate_id": document_id,
                 "payload": '{"document_id": "not-a-uuid"}',
                 "now": datetime.now(UTC),

@@ -47,6 +47,9 @@ DOWNGRADE_GUARDS: dict[str, tuple[tuple[str, ...], tuple[tuple[str, str], ...]]]
         ("sessions", "SELECT EXISTS (SELECT 1 FROM auth_sessions)"),
         ("recovery codes", "SELECT EXISTS (SELECT 1 FROM recovery_codes)"),
     )),
+    # Remover o default de dono não descarta dado algum: apenas volta a exigir o dono em
+    # cada escrita.
+    "0012": ((), ()),
 }
 
 

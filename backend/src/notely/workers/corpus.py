@@ -148,6 +148,7 @@ async def enqueue_missing_documents(session: AsyncSession) -> int:
         now = utc_now()
         statement = insert(OutboxEventRow).values(
             id=uuid4(),
+            user_id=row.user_id,
             aggregate_type="document",
             aggregate_id=row.id,
             event_type="document.corpus.rebuild",

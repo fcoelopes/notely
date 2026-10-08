@@ -16,6 +16,9 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "migrate.py"
 ROLLBACK = ROOT / "scripts" / "rollback.py"
 
+# Dono provisório criado pela migration 0011: as escritas diretas dos testes precisam dele.
+BOOTSTRAP_USER = "00000000-0000-0000-0000-000000000001"
+
 
 def _script() -> ScriptDirectory:
     return ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
@@ -161,15 +164,15 @@ def test_downgrade_cannot_discard_reading_progress(database: str, tmp_path: Path
     document_id = str(uuid4())
     session_id = str(uuid4())
     inserted = docker("psql", "-v", "ON_ERROR_STOP=1", "-U", "notely", "-d", database,
-                      input=("INSERT INTO documents (id, sha256, title, filename, page_count, "
-                             "storage_uri, created_at, updated_at) VALUES "
-                             f"('{document_id}', '{'b' * 64}', 'Protected', 'test.pdf', 1, "
-                             "'test://pdf', now(), now());"
-                             "INSERT INTO study_sessions (id, created_at, updated_at) VALUES "
-                             f"('{session_id}', now(), now());"
+                      input=("INSERT INTO documents (id, user_id, sha256, title, filename, "
+                             "page_count, storage_uri, created_at, updated_at) VALUES "
+                             f"('{document_id}', '{BOOTSTRAP_USER}', '{'b' * 64}', 'Protected', "
+                             "'test.pdf', 1, 'test://pdf', now(), now());"
+                             "INSERT INTO study_sessions (id, user_id, created_at, updated_at) "
+                             f"VALUES ('{session_id}', '{BOOTSTRAP_USER}', now(), now());"
                              "INSERT INTO study_session_viewed_pages "
-                             "(study_session_id, document_id, page_number, first_viewed_at) VALUES "
-                             f"('{session_id}', '{document_id}', 1, now());"))
+                             "(study_session_id, document_id, page_number, user_id, first_viewed_at) "
+                             f"VALUES ('{session_id}', '{document_id}', 1, '{BOOTSTRAP_USER}', now());"))
     assert inserted.returncode == 0, inserted.stderr
     # Desce direto até a revisão que protege o progresso. Usar o script de rollback passo a
     # passo faria backup e restore completos por revisão, e o custo cresce a cada migration.
@@ -219,10 +222,10 @@ def test_backup_restores_to_new_database_and_startup_can_use_it(database: str, t
     assert migrate(database, tmp_path).returncode == 0
     document_id = str(uuid4())
     inserted = docker("psql", "-v", "ON_ERROR_STOP=1", "-U", "notely", "-d", database,
-                      input=("INSERT INTO documents (id, sha256, title, filename, page_count, "
-                             "storage_uri, created_at, updated_at) VALUES "
-                             f"('{document_id}', '{'c' * 64}', 'Recovered', 'test.pdf', 1, "
-                             "'test://pdf', now(), now());"))
+                      input=("INSERT INTO documents (id, user_id, sha256, title, filename, "
+                             "page_count, storage_uri, created_at, updated_at) VALUES "
+                             f"('{document_id}', '{BOOTSTRAP_USER}', '{'c' * 64}', 'Recovered', "
+                             "'test.pdf', 1, 'test://pdf', now(), now());"))
     assert inserted.returncode == 0, inserted.stderr
     archive = tmp_path / "recovery.dump"
     with archive.open("wb") as output:

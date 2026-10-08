@@ -155,6 +155,7 @@ async def _publish_extraction(
     session: AsyncSession,
     annotation_id: UUID,
     *,
+    user_id: UUID,
     provider: ConceptExtractionProvider,
 ) -> bool:
     """Publica `concepts.extracted` para o worker de grafo projetar os conceitos.
@@ -166,6 +167,7 @@ async def _publish_extraction(
         insert(OutboxEventRow)
         .values(
             id=uuid4(),
+            user_id=user_id,
             aggregate_type="annotation",
             aggregate_id=annotation_id,
             event_type=PUBLISHED_EVENT,
@@ -215,7 +217,9 @@ async def run_batch(
                 if await _has_relations(session, annotation.id):
                     # Já extraído: reprocessar não gasta modelo nem duplica relação, mas
                     # republica para o grafo alcançar o estado do PostgreSQL.
-                    await _publish_extraction(session, annotation.id, provider=provider)
+                    await _publish_extraction(
+                        session, annotation.id, user_id=annotation.user_id, provider=provider
+                    )
                 else:
                     created = await extract_annotation(
                         session=session, provider=provider, annotation=annotation
@@ -223,7 +227,9 @@ async def run_batch(
                     stats["extracted"] += 1
                     stats["relations"] += created
                     if created:
-                        await _publish_extraction(session, annotation.id, provider=provider)
+                        await _publish_extraction(
+                            session, annotation.id, user_id=annotation.user_id, provider=provider
+                        )
             except ConceptExtractionUnavailableError as exc:
                 # Falha do provider fica pendente para retry com backoff; a anotação
                 # permanece intacta.
@@ -276,19 +282,20 @@ async def enqueue_missing_annotations(
         or_(undelivered, unresolved),
     )
     rows = (
-        await session.scalars(
-            select(AnnotationRow.id)
+        await session.execute(
+            select(AnnotationRow.id, AnnotationRow.user_id)
             .where(AnnotationRow.deleted_at.is_(None), ~has_relations, ~pending)
             .order_by(AnnotationRow.created_at, AnnotationRow.id)
             .limit(limit)
         )
     ).all()
     queued = 0
-    for annotation_id in rows:
+    for annotation_id, user_id in rows:
         statement = (
             insert(OutboxEventRow)
             .values(
                 id=uuid4(),
+                user_id=user_id,
                 aggregate_type="annotation",
                 aggregate_id=annotation_id,
                 event_type=REQUESTED_EVENT,

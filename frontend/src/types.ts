@@ -6,6 +6,26 @@ export type AnnotationType =
   | "disagreement"
   | "relation";
 
+export type SessionStage = "mfa_pending" | "active";
+
+export interface Account {
+  id: string;
+  email: string;
+  totp_enabled: boolean;
+}
+
+export interface SessionOutcome {
+  stage: SessionStage;
+  /** Com segundo fator ativo a sessão ainda não vale: falta o código. */
+  mfa_required: boolean;
+  user: Account;
+}
+
+export interface Enrollment {
+  secret: string;
+  uri: string;
+}
+
 export interface NormalizedRect {
   x: number;
   y: number;

@@ -89,6 +89,7 @@ from notely.core.services import (
     SuggestionAlreadyResolvedError,
     SuggestionNotFoundError,
 )
+from notely.db.identity import SqlAlchemyIdentityStore
 from notely.db.uow import SqlAlchemyUnitOfWork
 from notely.providers.malware import ClamAVScanner, MalwareDetectedError, MalwareScanError
 from notely.providers.storage import (

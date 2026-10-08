@@ -505,3 +505,24 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .source-state { color: var(--muted); text-decoration: none; font-size: 10px; }
 
 .reading-progress { color: #536c58; font-variant-numeric: tabular-nums; }
+
+.header-actions { justify-self: end; display: flex; align-items: center; gap: 14px; }
+.account-email { color: var(--muted); font-size: 13px; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sign-out { border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; padding: 5px 12px; border-radius: 999px; }
+.sign-out:hover { color: var(--ink); border-color: var(--ink); }
+.app-shell--reading .account-email { color: #aeb6c0; }
+.app-shell--reading .sign-out { border-color: rgba(255, 255, 255, 0.25); color: #d5dae0; }
+.app-shell--reading .sign-out:hover { color: #fff; border-color: #fff; }
+
+.login { min-height: 100vh; display: grid; place-items: center; background: var(--canvas); padding: 24px; }
+.login-card { width: min(380px, 100%); background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 32px; display: flex; flex-direction: column; gap: 14px; }
+.login-card h1 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 30px; letter-spacing: -0.02em; }
+.login-hint { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+.login-card form { display: flex; flex-direction: column; gap: 6px; }
+.login-card label { font-size: 13px; color: var(--muted); }
+.login-card input { padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+.login-card input:focus-visible { outline: 2px solid var(--sage); outline-offset: 1px; }
+.login-card button[type="submit"] { margin-top: 10px; padding: 11px 16px; border: 0; border-radius: 9px; background: var(--sage); color: #f7faf6; cursor: pointer; font-weight: 600; }
+.login-card button[type="submit"]:disabled { opacity: 0.6; cursor: progress; }
+.login-alternate { align-self: flex-start; border: 0; background: transparent; color: var(--sage); cursor: pointer; font-size: 13px; padding: 0; text-decoration: underline; }
+.login-error { margin: 0; color: #a5372c; font-size: 13px; }

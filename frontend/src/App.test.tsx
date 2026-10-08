@@ -23,8 +23,15 @@ interface CreateAnnotationInput {
 }
 
 const pdfDocument = vi.hoisted(() => ({ props: null as DocumentProps | null, pageRendered: null as (() => void) | null }));
+const testAccount = { id: "user-1", email: "dono@exemplo.com", totp_enabled: false };
 const api = vi.hoisted(() => ({
   acceptThemeSuggestion: vi.fn(),
+  currentAccount: vi.fn(),
+  login: vi.fn(),
+  logout: vi.fn(),
+  setUnauthorizedHandler: vi.fn(),
+  submitMfaCode: vi.fn(),
+  submitRecoveryCode: vi.fn(),
   startReadingSession: vi.fn(),
   updateReadingSession: vi.fn(),
   attachDocumentToSession: vi.fn(),
@@ -205,6 +212,8 @@ describe("App", () => {
     pdfDocument.props = null;
     pdfDocument.pageRendered = null;
 
+    api.currentAccount.mockResolvedValue(testAccount);
+    api.logout.mockResolvedValue(undefined);
     api.listDocuments.mockResolvedValue([]);
     api.listStudySessions.mockResolvedValue([]);
     api.getReadingProgress.mockResolvedValue({ documents: {}, sessions: {} });
@@ -773,5 +782,23 @@ describe("App", () => {
     await waitFor(() => expect(api.getStudySession).toHaveBeenCalledWith("session-7"));
     await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-4/content"));
     expect(within(document.querySelector(".document-tabs") as HTMLElement).getByText("Capítulo")).toBeInTheDocument();
+  });
+  it("shows the login screen when there is no session", async () => {
+    api.currentAccount.mockRejectedValue(new Error("sem sessão"));
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Notely" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Senha")).toBeInTheDocument();
+    // Sem sessão o Reader não é montado nem busca dados.
+    expect(api.listDocuments).not.toHaveBeenCalled();
+  });
+
+  it("returns to the login screen after signing out", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sair" }));
+
+    await waitFor(() => expect(api.logout).toHaveBeenCalled());
+    expect(await screen.findByRole("heading", { name: "Notely" })).toBeInTheDocument();
   });
 });

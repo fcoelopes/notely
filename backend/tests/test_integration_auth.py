@@ -13,6 +13,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import httpx
+
+from notely.api.app import create_app
 from notely.core.auth import (
     AuthConfigurationError,
     AuthService,
@@ -276,6 +279,30 @@ async def test_mfa_needs_the_server_key(
 
     with pytest.raises(AuthConfigurationError):
         await service.start_enrollment(user_id=user.id)
+
+
+async def test_default_app_wiring_serves_auth(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    """`create_app()` sem argumentos monta o serviço real: cobre o caminho padrão.
+
+    Sem este teste, um erro no construtor padrão só apareceria com o servidor no ar.
+    """
+    settings_url = os.environ.get("NOTELY_TEST_DATABASE_URL", TEST_DATABASE_URL)
+    os.environ["NOTELY_DATABASE_URL"] = settings_url
+    app = create_app()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/health")).status_code == 200
+        # A rota existe e o serviço real está ligado: sem sessão, 401.
+        assert (await client.get("/api/auth/me")).status_code == 401
+        # Credencial inexistente é decidida pelo serviço real, não por um duplo.
+        rejected = await client.post(
+            "/api/auth/login", json={"email": "ninguem@exemplo.com", "password": PASSWORD}
+        )
+    assert rejected.status_code == 401
 
 
 async def test_enrollment_must_be_confirmed_with_a_valid_code(

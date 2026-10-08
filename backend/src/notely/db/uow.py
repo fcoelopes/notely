@@ -9,8 +9,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from notely.core.models import (
+    AIModelConfig,
+    AIModelProvider,
     AISuggestion,
     Annotation,
+    CorpusPassage,
     CurationRequest,
     CurationStatus,
     CuratedSource,
@@ -25,8 +28,13 @@ from notely.core.models import (
     SuggestionStatus,
     ThemeOrigin,
 )
+from notely.db.assistant_search import (
+    list_session_annotations as list_session_annotation_rows,
+)
+from notely.db.assistant_search import search_session_passages
 from notely.providers.pdf_text import EXTRACTOR_VERSION
 from notely.db.models import (
+    AIModelConfigRow,
     AISuggestionRow,
     AnnotationRow,
     CurationRequestRow,
@@ -477,6 +485,63 @@ class SqlAlchemyUnitOfWork:
         ).all()
         return [_to_ai_suggestion(row) for row in rows]
 
+    async def get_ai_model_config(self) -> AIModelConfig | None:
+        row = await self._active_session().scalar(
+            select(AIModelConfigRow).where(AIModelConfigRow.user_id == self._user_id)
+        )
+        return _to_ai_model_config(row) if row else None
+
+    async def search_session_passages(
+        self,
+        *,
+        session_id: UUID,
+        question: str,
+        document_id: UUID | None = None,
+        limit: int = 5,
+    ) -> list[CorpusPassage]:
+        """Trechos do corpus da sessão que ancoram uma resposta do assistente."""
+        return await search_session_passages(
+            self._active_session(),
+            study_session_id=session_id,
+            user_id=self._user_id,
+            question=question,
+            document_id=document_id,
+            limit=limit,
+        )
+
+    async def list_session_annotations(
+        self, *, session_id: UUID, limit: int = 8
+    ) -> list[Annotation]:
+        rows = await list_session_annotation_rows(
+            self._active_session(),
+            study_session_id=session_id,
+            user_id=self._user_id,
+            limit=limit,
+        )
+        return [_to_annotation(row) for row in rows]
+
+    async def save_ai_model_config(self, config: AIModelConfig) -> None:
+        """Uma configuração por usuário: cria na primeira vez, atualiza depois."""
+        row = await self._active_session().scalar(
+            select(AIModelConfigRow).where(AIModelConfigRow.user_id == self._user_id)
+        )
+        if row is None:
+            self._active_session().add(
+                _ai_model_config_row(config, user_id=self._user_id)
+            )
+            return
+        row.provider = config.provider.value
+        row.model = config.model
+        row.api_key_encrypted = config.api_key_encrypted
+        row.base_url = config.base_url
+        row.enabled = config.enabled
+        row.updated_at = config.updated_at
+
+    async def delete_ai_model_config(self) -> None:
+        await self._active_session().execute(
+            delete(AIModelConfigRow).where(AIModelConfigRow.user_id == self._user_id)
+        )
+
     async def commit(self) -> None:
         await self._active_session().commit()
 
@@ -576,6 +641,33 @@ def _to_study_session_document(row: StudySessionDocumentRow) -> StudySessionDocu
         document_id=row.document_id,
         position=row.position,
         added_at=row.added_at,
+    )
+
+
+def _ai_model_config_row(config: AIModelConfig, *, user_id: UUID) -> AIModelConfigRow:
+    return AIModelConfigRow(
+        id=config.id,
+        user_id=user_id,
+        provider=config.provider.value,
+        model=config.model,
+        api_key_encrypted=config.api_key_encrypted,
+        base_url=config.base_url,
+        enabled=config.enabled,
+        created_at=config.created_at,
+        updated_at=config.updated_at,
+    )
+
+
+def _to_ai_model_config(row: AIModelConfigRow) -> AIModelConfig:
+    return AIModelConfig(
+        id=row.id,
+        provider=AIModelProvider(row.provider),
+        model=row.model,
+        api_key_encrypted=row.api_key_encrypted,
+        base_url=row.base_url,
+        enabled=row.enabled,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 

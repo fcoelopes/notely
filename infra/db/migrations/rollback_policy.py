@@ -50,6 +50,8 @@ DOWNGRADE_GUARDS: dict[str, tuple[tuple[str, ...], tuple[tuple[str, str], ...]]]
     # Remover o default de dono não descarta dado algum: apenas volta a exigir o dono em
     # cada escrita.
     "0012": ((), ()),
+    # A configuração de modelo é recadastrável pelo usuário; não há dado autoral aqui.
+    "0013": ((), ()),
 }
 
 

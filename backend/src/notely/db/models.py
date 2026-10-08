@@ -389,3 +389,18 @@ class LoginAttemptRow(Base):
     normalized_email: Mapped[str] = mapped_column(Text, nullable=False)
     succeeded: Mapped[bool] = mapped_column(Boolean, nullable=False)
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AIModelConfigRow(OwnedRow, Base):
+    """Configuração BYOK do usuário. A chave é persistida já cifrada."""
+
+    __tablename__ = "ai_model_configs"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text)
+    base_url: Mapped[str | None] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -1,6 +1,6 @@
 # Plano de implementação — API de modelo de IA para estudo (BYOK, Claude/GPT)
 
-**Estado:** em curadoria, não iniciado
+**Estado:** implementado; aguardando revisão
 
 **Issue:** [#8 — API de modelo de IA para estudo (BYOK, Claude/GPT)](https://github.com/fcoelopes/notely/issues/8)
 
@@ -68,5 +68,13 @@ Permitir que o usuário plugue o próprio modelo de IA (Claude ou GPT, com chave
 
 ## Validação da implementação
 
-- Testes de unidade dos adapters com fixtures HTTP; testes de integração do endpoint ancorado com corpus indexado; testes de não-vazamento da chave e de que a saída do modelo não vira dado autoral.
-- `uv run pytest` e `npm test` verdes; migration `up → down → up` validada em banco descartável.
+- `uv run pytest` no backend: 169 testes passaram, incluindo 7 de integração do assistente e 8 do contrato HTTP.
+- Integração: a chave é gravada cifrada e volta legível só com a chave do servidor; sem nova chave, a guardada é mantida; a resposta ancorada usa o corpus indexado e as anotações da sessão; o chat livre não tem ancoragem; sessão inexistente é recusada; provider indisponível não altera as anotações; e a configuração é por usuário.
+- Contrato HTTP: a resposta de configuração nunca traz a chave (só `has_key`); configurar passa a chave adiante; sem configuração a leitura responde `404` e a limpeza `204`; falta de configuração no chat responde `409` e provider fora do ar `502`; as rotas exigem sessão.
+- Migration `0013` aplicada e validada em `up → down → up` em banco descartável.
+
+## Limitações conhecidas
+
+- A recuperação é lexical e restrita a uma sessão de estudo: não há busca no acervo inteiro nem similaridade semântica (pgvector segue pendente).
+- Não há streaming nem histórico da conversa; a resposta é instruída a citar, mas não é verificada automaticamente contra o texto.
+- A interface do Reader ainda não expõe o assistente.

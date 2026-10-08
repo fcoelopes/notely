@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from notely.core.models import (
+    AIModelProvider,
     AnnotationSource,
     AnnotationType,
     CurationStatus,
@@ -241,3 +242,43 @@ class RecoveryCodesResponse(BaseModel):
 class DisableMfaRequest(BaseModel):
     # Desativar o segundo fator exige a senha: uma sessão roubada não basta.
     password: str = Field(min_length=1, max_length=1024)
+
+
+class AIModelConfigRequest(BaseModel):
+    provider: AIModelProvider
+    model: str = Field(min_length=1, max_length=200)
+    # Sem chave, a que já está guardada é mantida; a chave nunca é devolvida.
+    api_key: str | None = Field(default=None, max_length=400)
+    base_url: str | None = Field(default=None, max_length=500)
+    enabled: bool = True
+
+
+class AIModelConfigResponse(BaseModel):
+    provider: AIModelProvider
+    model: str
+    base_url: str | None
+    enabled: bool
+    has_key: bool
+
+
+class AssistantChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    study_session_id: UUID | None = None
+    document_id: UUID | None = None
+
+
+class AssistantSourceResponse(BaseModel):
+    document_id: UUID
+    document_title: str
+    page_number: int
+    excerpt: str
+
+
+class AssistantAnswerResponse(BaseModel):
+    """Resposta de modelo. `grounded` diz se ela se apoiou no material do usuário."""
+
+    answer: str
+    provider: str
+    model: str
+    grounded: bool
+    sources: list[AssistantSourceResponse]

@@ -6,9 +6,11 @@ from typing import Protocol, Self
 from uuid import UUID
 
 from notely.core.models import (
+    AIModelConfig,
     AISuggestion,
     Annotation,
     AuthSession,
+    CorpusPassage,
     CurationRequest,
     CuratedSource,
     Document,
@@ -150,5 +152,24 @@ class UnitOfWork(Protocol):
     async def list_ai_suggestions(
         self, subject_type: str, subject_id: UUID
     ) -> list[AISuggestion]: ...
+
+    async def get_ai_model_config(self) -> AIModelConfig | None: ...
+
+    async def save_ai_model_config(self, config: AIModelConfig) -> None: ...
+
+    async def delete_ai_model_config(self) -> None: ...
+
+    async def search_session_passages(
+        self,
+        *,
+        session_id: UUID,
+        question: str,
+        document_id: UUID | None = None,
+        limit: int = 5,
+    ) -> list[CorpusPassage]: ...
+
+    async def list_session_annotations(
+        self, *, session_id: UUID, limit: int = 8
+    ) -> list[Annotation]: ...
 
     async def commit(self) -> None: ...

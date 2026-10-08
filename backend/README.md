@@ -221,3 +221,28 @@ Fluxo HTTP: `POST /api/auth/login` e, com segundo fator ativo, `POST /api/auth/m
 `POST /api/auth/mfa/enroll`, `/confirm` e `/disable`. A sessão vai em cookie `HttpOnly`.
 Cada registro tem dono, aplicado pelo escopo da unidade de trabalho. Ver
 [ADR 0006](../docs/adr/0006-user-accounts-and-ownership.md).
+
+## Assistente de estudo com o modelo do usuário (issue #8)
+
+O assistente usa a chave do próprio usuário (BYOK) e responde ancorado no corpus da
+sessão e nas anotações dele. A chave é cifrada em repouso e nunca é devolvida pela API.
+
+```bash
+export NOTELY_AI_SECRET_KEY="$(backend/.venv/bin/python -c \
+  'from notely.core.security import SecretCipher; print(SecretCipher.generate_key())')"
+```
+
+```text
+GET    /api/ai-config              consulta a configuração (informa has_key, nunca a chave)
+PUT    /api/ai-config              define provider, modelo, chave e base URL
+DELETE /api/ai-config              limpa a configuração
+POST   /api/study-assistant/chat   pergunta; com study_session_id a resposta é ancorada
+```
+
+`POST /api/study-assistant/chat` recebe `{message, study_session_id?, document_id?}`.
+Sem `study_session_id` é chat livre, e a resposta traz `grounded: false` e nenhuma fonte.
+Com sessão, a resposta cita documento e página e informa `provider` e `model`.
+
+A resposta é inferência de modelo e **não é persistida**: ela não vira anotação nem
+conhecimento autoral. O contexto enviado é o mínimo necessário — o documento integral não
+sai daqui. Ver [ADR 0007](../docs/adr/0007-study-assistant-with-user-model.md).

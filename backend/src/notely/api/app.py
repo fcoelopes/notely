@@ -21,9 +21,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from notely.api.schemas import (
+    AIModelConfigRequest,
+    AIModelConfigResponse,
     AISuggestionResponse,
     AnnotationCreate,
     AnnotationResponse,
+    AssistantAnswerResponse,
+    AssistantChatRequest,
+    AssistantSourceResponse,
     AuthSessionResponse,
     CuratedSourceResponse,
     DisableMfaRequest,
@@ -66,6 +71,7 @@ from notely.core.ingestion import (
     InvalidDocumentError,
 )
 from notely.core.models import (
+    AIModelConfig,
     AISuggestion,
     Document,
     StudySession,
@@ -73,6 +79,13 @@ from notely.core.models import (
     User,
 )
 from notely.core.security import SecretCipher, SecurityError
+from notely.core.study_assistant import (
+    AssistantConfigurationError,
+    AssistantError,
+    AssistantNotConfiguredError,
+    AssistantUnavailableError,
+    StudyAssistant,
+)
 from notely.core.services import (
     CurationNotFoundError,
     CurationRetryConflictError,
@@ -124,6 +137,7 @@ class Settings(BaseSettings):
     topic_api_key: str = ""
     topic_timeout_seconds: float = 30.0
     auth_secret_key: str = ""
+    ai_secret_key: str = ""
     session_cookie_name: str = "notely_session"
     session_cookie_secure: bool = False
 
@@ -176,6 +190,13 @@ def get_storage(request: Request) -> MinioObjectStorage:
     return request.app.state.storage_factory()
 
 
+def get_assistant(
+    request: Request, user: User = Depends(get_current_user)
+) -> StudyAssistant:
+    """Assistente já escopado ao dono: ele só alcança o material do usuário."""
+    return request.app.state.assistant_factory(user.id)
+
+
 def get_topic_provider(request: Request) -> TopicSuggestionProvider:
     return request.app.state.topic_provider_factory()
 
@@ -193,6 +214,10 @@ def register_auth_error_handlers(app: FastAPI) -> None:
         (AuthConfigurationError, status.HTTP_503_SERVICE_UNAVAILABLE),
         (SecurityError, status.HTTP_503_SERVICE_UNAVAILABLE),
         (IdentityError, status.HTTP_422_UNPROCESSABLE_CONTENT),
+        (AssistantNotConfiguredError, status.HTTP_409_CONFLICT),
+        (AssistantConfigurationError, status.HTTP_503_SERVICE_UNAVAILABLE),
+        (AssistantUnavailableError, status.HTTP_502_BAD_GATEWAY),
+        (AssistantError, status.HTTP_422_UNPROCESSABLE_CONTENT),
     )
 
     def build_handler(code: int) -> Callable[[Request, Exception], object]:
@@ -210,6 +235,17 @@ def _session_payload(outcome: object) -> AuthSessionResponse:
         stage=outcome.stage,  # type: ignore[attr-defined]
         mfa_required=outcome.mfa_required,  # type: ignore[attr-defined]
         user=UserResponse.model_validate(outcome.user),  # type: ignore[attr-defined]
+    )
+
+
+def _ai_config_payload(config: AIModelConfig) -> AIModelConfigResponse:
+    """A chave nunca sai daqui: só o fato de existir."""
+    return AIModelConfigResponse(
+        provider=config.provider,
+        model=config.model,
+        base_url=config.base_url,
+        enabled=config.enabled,
+        has_key=bool(config.api_key_encrypted),
     )
 
 
@@ -244,12 +280,13 @@ def create_app(
     topic_provider_factory: Callable[[], TopicSuggestionProvider] | None = None,
     storage_factory: Callable[[], MinioObjectStorage] | None = None,
     auth_service: AuthService | None = None,
+    assistant_factory: Callable[[UUID], StudyAssistant] | None = None,
 ) -> FastAPI:
     settings = Settings()
     engine = None
     sessions: async_sessionmaker[AsyncSession] | None = None
 
-    if service_factory is None or auth_service is None:
+    if service_factory is None or auth_service is None or assistant_factory is None:
         engine = create_async_engine(settings.database_url, pool_pre_ping=True)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -264,6 +301,13 @@ def create_app(
         cipher = SecretCipher(settings.auth_secret_key) if settings.auth_secret_key else None
         auth_service = AuthService(
             lambda: SqlAlchemyIdentityStore(sessions), cipher=cipher
+        )
+
+    if assistant_factory is None:
+        assert sessions is not None
+        ai_cipher = SecretCipher(settings.ai_secret_key) if settings.ai_secret_key else None
+        assistant_factory = lambda user_id: StudyAssistant(
+            lambda: SqlAlchemyUnitOfWork(sessions, user_id=user_id), cipher=ai_cipher
         )
 
     if storage_factory is None:
@@ -307,6 +351,7 @@ def create_app(
     app.state.ingestion_factory = ingestion_factory
     app.state.storage_factory = storage_factory
     app.state.topic_provider_factory = topic_provider_factory
+    app.state.assistant_factory = assistant_factory
     app.state.auth_service = auth_service
     app.state.session_cookie_name = settings.session_cookie_name
     app.state.session_cookie_secure = settings.session_cookie_secure
@@ -393,6 +438,65 @@ def create_app(
         body: DisableMfaRequest, user: User = Depends(get_current_user)
     ) -> None:
         await auth_service.disable_mfa(user_id=user.id, password=body.password)
+
+    @app.get("/api/ai-config", response_model=AIModelConfigResponse, tags=["assistant"])
+    async def read_ai_config(
+        assistant: StudyAssistant = Depends(get_assistant),
+    ) -> AIModelConfigResponse:
+        config = await assistant.get_config()
+        if config is None:
+            raise HTTPException(status_code=404, detail="no model is configured")
+        return _ai_config_payload(config)
+
+    @app.put("/api/ai-config", response_model=AIModelConfigResponse, tags=["assistant"])
+    async def write_ai_config(
+        body: AIModelConfigRequest, assistant: StudyAssistant = Depends(get_assistant)
+    ) -> AIModelConfigResponse:
+        config = await assistant.save_config(
+            provider=body.provider,
+            model=body.model,
+            api_key=body.api_key,
+            base_url=body.base_url,
+            enabled=body.enabled,
+        )
+        return _ai_config_payload(config)
+
+    @app.delete(
+        "/api/ai-config", status_code=status.HTTP_204_NO_CONTENT, tags=["assistant"]
+    )
+    async def delete_ai_config(
+        assistant: StudyAssistant = Depends(get_assistant),
+    ) -> None:
+        await assistant.clear_config()
+
+    @app.post(
+        "/api/study-assistant/chat",
+        response_model=AssistantAnswerResponse,
+        tags=["assistant"],
+    )
+    async def assistant_chat(
+        body: AssistantChatRequest, assistant: StudyAssistant = Depends(get_assistant)
+    ) -> AssistantAnswerResponse:
+        outcome = await assistant.ask(
+            message=body.message,
+            study_session_id=body.study_session_id,
+            document_id=body.document_id,
+        )
+        return AssistantAnswerResponse(
+            answer=outcome.answer,
+            provider=outcome.provider,
+            model=outcome.model,
+            grounded=outcome.grounded,
+            sources=[
+                AssistantSourceResponse(
+                    document_id=source.document_id,
+                    document_title=source.document_title,
+                    page_number=source.page_number,
+                    excerpt=source.excerpt,
+                )
+                for source in outcome.sources
+            ],
+        )
 
     @app.post(
         "/api/documents", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED

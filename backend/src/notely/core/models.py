@@ -81,6 +81,13 @@ class SessionStage(StrEnum):
     ACTIVE = "active"
 
 
+class AIModelProvider(StrEnum):
+    """Provedores de modelo aceitos na configuração BYOK do usuário."""
+
+    OPENAI_COMPATIBLE = "openai_compatible"
+    ANTHROPIC = "anthropic"
+
+
 @dataclass(frozen=True, slots=True)
 class Document:
     sha256: str
@@ -402,4 +409,39 @@ class RecoveryCode:
     @property
     def is_used(self) -> bool:
         return self.used_at is not None
+
+
+@dataclass(frozen=True, slots=True)
+class AIModelConfig:
+    """Configuração de modelo do usuário (BYOK).
+
+    A chave viaja cifrada: o domínio só a transporta, quem cifra e decifra é a camada de
+    segurança. A chave em claro nunca é devolvida pela API.
+    """
+
+    provider: AIModelProvider
+    model: str
+    api_key_encrypted: str | None = None
+    base_url: str | None = None
+    enabled: bool = True
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if not self.model.strip():
+            raise ValueError("model is required")
+        if self.base_url is not None and not self.base_url.strip():
+            raise ValueError("base_url cannot be blank when provided")
+
+
+@dataclass(frozen=True, slots=True)
+class CorpusPassage:
+    """Trecho do corpus recuperado para ancorar uma resposta. É corpus, não conhecimento."""
+
+    document_id: UUID
+    document_title: str
+    page_number: int
+    excerpt: str
+    score: float = 0.0
 

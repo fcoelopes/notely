@@ -11,6 +11,7 @@ from notely.core.models import (
     AnnotationType,
     CurationStatus,
     AuthorType,
+    SessionStage,
     SuggestionStatus,
     ThemeOrigin,
 )
@@ -199,3 +200,44 @@ class ReadingProgressUpdateResponse(BaseModel):
     document_id: UUID
     session: SessionProgressResponse
     document_global: PageProgressResponse
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=1, max_length=254)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class MfaCodeRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
+
+
+class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    email: str
+    totp_enabled: bool
+
+
+class AuthSessionResponse(BaseModel):
+    """`mfa_required` diz ao Reader que a sessão ainda não vale para ler."""
+
+    stage: SessionStage
+    mfa_required: bool
+    user: UserResponse
+
+
+class EnrollmentResponse(BaseModel):
+    secret: str
+    uri: str
+
+
+class RecoveryCodesResponse(BaseModel):
+    """Exibidos uma única vez; o servidor guarda apenas o hash."""
+
+    recovery_codes: list[str]
+
+
+class DisableMfaRequest(BaseModel):
+    # Desativar o segundo fator exige a senha: uma sessão roubada não basta.
+    password: str = Field(min_length=1, max_length=1024)

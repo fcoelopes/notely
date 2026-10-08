@@ -32,6 +32,8 @@ from notely.db.models import OutboxDeliveryRow, ReaderEventRow
 from notely.db.outbox import CONSUMER_TIMESCALE, SqlAlchemyOutboxStore
 from notely.db.uow import SqlAlchemyUnitOfWork
 from notely.workers.timescale import run_batch
+from auth_helpers import TEST_USER_ID, ensure_test_user
+from auth_helpers import TEST_USER_ID
 
 TEST_DATABASE_URL = os.environ.get(
     "NOTELY_TEST_DATABASE_URL",
@@ -46,7 +48,7 @@ class IntegrationContext:
         self.engine = engine
         self.sessions = async_sessionmaker(engine, expire_on_commit=False)
         self.store = SqlAlchemyOutboxStore(self.sessions)
-        self.service = NotelyService(lambda: SqlAlchemyUnitOfWork(self.sessions))
+        self.service = NotelyService(lambda: SqlAlchemyUnitOfWork(self.sessions, user_id=TEST_USER_ID))
 
 
 @pytest.fixture
@@ -63,6 +65,7 @@ async def context() -> AsyncIterator[IntegrationContext]:
         await engine.dispose()
         pytest.skip(f"TimescaleDB integration database is unavailable: {exc}")
 
+    await ensure_test_user(context.sessions)
     yield context
     await engine.dispose()
 

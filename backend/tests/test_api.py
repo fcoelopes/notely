@@ -33,6 +33,7 @@ from notely.providers.topic import (
     TopicSuggestionContext,
     TopicSuggestionUnavailableError,
 )
+from auth_helpers import authenticate
 
 
 class StubService:
@@ -61,7 +62,7 @@ async def test_create_annotation_contract_preserves_user_provenance() -> None:
             quote="A selected passage",
         ),
     )
-    app = create_app(lambda: StubService(annotation))  # type: ignore[arg-type]
+    app = authenticate(create_app(lambda user_id: StubService(annotation)))  # type: ignore[arg-type]
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -83,7 +84,9 @@ async def test_create_annotation_contract_preserves_user_provenance() -> None:
 
 
 async def test_domain_validation_is_returned_as_unprocessable_entity() -> None:
-    app = create_app(lambda: StubService(error=ValueError("position is required")))  # type: ignore[arg-type]
+    app = authenticate(
+        create_app(lambda user_id: StubService(error=ValueError("position is required")))
+    )  # type: ignore[arg-type]
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -252,10 +255,12 @@ class StubTopicProvider:
 
 
 def build_app(service: StubSessionService, storage: StubStorage | None = None):
-    return create_app(
-        lambda: service,  # type: ignore[arg-type]
-        topic_provider_factory=StubTopicProvider,  # type: ignore[arg-type]
-        storage_factory=lambda: storage or StubStorage(),  # type: ignore[arg-type]
+    return authenticate(
+        create_app(
+            lambda user_id: service,  # type: ignore[arg-type]
+            topic_provider_factory=StubTopicProvider,  # type: ignore[arg-type]
+            storage_factory=lambda: storage or StubStorage(),  # type: ignore[arg-type]
+        )
     )
 
 
@@ -464,7 +469,7 @@ class StubReadingService:
 
 async def test_reading_session_contract() -> None:
     service = StubReadingService()
-    app = create_app(lambda: service)  # type: ignore[arg-type]
+    app = authenticate(create_app(lambda user_id: service))  # type: ignore[arg-type]
     document_id = uuid4()
 
     async with httpx.AsyncClient(
@@ -495,7 +500,9 @@ async def test_reading_session_contract() -> None:
 
 
 async def test_reading_session_errors_are_mapped() -> None:
-    app = create_app(lambda: StubReadingService(error=ReadingSessionNotFoundError("missing")))  # type: ignore[arg-type]
+    app = authenticate(
+        create_app(lambda user_id: StubReadingService(error=ReadingSessionNotFoundError("missing")))
+    )  # type: ignore[arg-type]
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -522,7 +529,7 @@ async def test_annotation_response_exposes_the_passage_identity() -> None:
             quote="Como isso se aplica?",
         ),
     )
-    app = create_app(lambda: StubService(annotation))  # type: ignore[arg-type]
+    app = authenticate(create_app(lambda user_id: StubService(annotation)))  # type: ignore[arg-type]
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

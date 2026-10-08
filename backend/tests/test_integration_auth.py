@@ -291,7 +291,9 @@ async def test_enrollment_must_be_confirmed_with_a_valid_code(
     with pytest.raises(InvalidMfaCodeError):
         await service.confirm_enrollment(user_id=user.id, code="000000")
 
-    # Desativar remove o segredo e os códigos de recuperação.
-    await service.disable_mfa(user_id=user.id)
+    # Desativar exige a senha e remove o segredo e os códigos de recuperação.
+    with pytest.raises(InvalidCredentialsError):
+        await service.disable_mfa(user_id=user.id, password="senha-errada-longa")
+    await service.disable_mfa(user_id=user.id, password=PASSWORD)
     with pytest.raises(MfaNotEnrolledError):
         await service.confirm_enrollment(user_id=user.id, code="123456")

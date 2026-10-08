@@ -71,6 +71,13 @@ if [[ "$mode" == --migrate-only ]]; then
   exit 0
 fi
 
+# O Notely não tem tela de cadastro: sem uma conta com senha, a API responde 401 em tudo.
+if ! backend/.venv/bin/python -m notely.cli list-users 2>/dev/null | grep -q "com senha"; then
+  printf '\nNenhuma conta tem senha ainda. Defina a senha do dono do acervo:\n'
+  printf '  backend/.venv/bin/python -m notely.cli bootstrap --email seu@email\n'
+  printf 'A senha é pedida pela linha de comando e o acervo existente continua desse dono.\n\n'
+fi
+
 if [[ ! -x frontend/node_modules/.bin/vite ]]; then
   npm --prefix frontend ci
 fi

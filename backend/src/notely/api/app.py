@@ -2,19 +2,37 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from notely.api.schemas import (
     AISuggestionResponse,
     AnnotationCreate,
     AnnotationResponse,
+    AuthSessionResponse,
     CuratedSourceResponse,
+    DisableMfaRequest,
+    EnrollmentResponse,
+    LoginRequest,
+    MfaCodeRequest,
     QuestionSourcesResponse,
+    RecoveryCodesResponse,
+    UserResponse,
     DocumentCreate,
     DocumentResponse,
     ReadingSessionResponse,
@@ -29,12 +47,32 @@ from notely.api.schemas import (
     StudySessionResponse,
     StudySessionThemeUpdate,
 )
+from notely.core.auth import (
+    AuthConfigurationError,
+    AuthError,
+    AuthService,
+    InvalidCredentialsError,
+    InvalidMfaCodeError,
+    InvalidSessionError,
+    LockedOutError,
+    MfaNotEnrolledError,
+    UserExistsError,
+    UserNotFoundError,
+)
+from notely.core.identity import IdentityError
 from notely.core.ingestion import (
     DocumentIngestionService,
     DocumentTooLargeError,
     InvalidDocumentError,
 )
-from notely.core.models import AISuggestion, Document, StudySession, StudySessionDocument
+from notely.core.models import (
+    AISuggestion,
+    Document,
+    StudySession,
+    StudySessionDocument,
+    User,
+)
+from notely.core.security import SecretCipher, SecurityError
 from notely.core.services import (
     CurationNotFoundError,
     CurationRetryConflictError,
@@ -84,6 +122,9 @@ class Settings(BaseSettings):
     topic_model: str = ""
     topic_api_key: str = ""
     topic_timeout_seconds: float = 30.0
+    auth_secret_key: str = ""
+    session_cookie_name: str = "notely_session"
+    session_cookie_secure: bool = False
 
 
 def build_topic_provider(settings: Settings) -> TopicSuggestionProvider:
@@ -99,19 +140,130 @@ def build_topic_provider(settings: Settings) -> TopicSuggestionProvider:
     raise ValueError(f"unsupported topic provider: {settings.topic_provider}")
 
 
+def get_auth_service(request: Request) -> AuthService:
+    """Serviço de autenticação montado por `create_app`."""
+    auth_service = getattr(request.app.state, "auth_service", None)
+    if auth_service is None:  # pragma: no cover - create_app sempre monta
+        raise RuntimeError("auth service is not configured")
+    return auth_service
+
+
+async def get_current_user(
+    request: Request, auth: AuthService = Depends(get_auth_service)
+) -> User:
+    """Usuário da sessão ativa. Sem sessão válida a rota responde 401."""
+    token = request.cookies.get(request.app.state.session_cookie_name)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="authentication required"
+        )
+    return await auth.authenticate(token=token)
+
+
+def get_service(request: Request, user: User = Depends(get_current_user)) -> NotelyService:
+    """Serviço já escopado ao dono: nenhuma consulta alcança dado de outro usuário."""
+    return request.app.state.service_factory(user.id)
+
+
+def get_ingestion(
+    request: Request, user: User = Depends(get_current_user)
+) -> DocumentIngestionService:
+    return request.app.state.ingestion_factory(user.id)
+
+
+def get_storage(request: Request) -> MinioObjectStorage:
+    return request.app.state.storage_factory()
+
+
+def get_topic_provider(request: Request) -> TopicSuggestionProvider:
+    return request.app.state.topic_provider_factory()
+
+
+def register_auth_error_handlers(app: FastAPI) -> None:
+    """Traduz os erros de domínio de autenticação para status HTTP."""
+    mapping = (
+        (InvalidCredentialsError, status.HTTP_401_UNAUTHORIZED),
+        (InvalidSessionError, status.HTTP_401_UNAUTHORIZED),
+        (InvalidMfaCodeError, status.HTTP_401_UNAUTHORIZED),
+        (LockedOutError, status.HTTP_429_TOO_MANY_REQUESTS),
+        (MfaNotEnrolledError, status.HTTP_409_CONFLICT),
+        (UserExistsError, status.HTTP_409_CONFLICT),
+        (UserNotFoundError, status.HTTP_404_NOT_FOUND),
+        (AuthConfigurationError, status.HTTP_503_SERVICE_UNAVAILABLE),
+        (SecurityError, status.HTTP_503_SERVICE_UNAVAILABLE),
+        (IdentityError, status.HTTP_422_UNPROCESSABLE_CONTENT),
+    )
+
+    def build_handler(code: int) -> Callable[[Request, Exception], object]:
+        async def handle(_: Request, exc: Exception) -> JSONResponse:
+            return JSONResponse(status_code=code, content={"detail": str(exc)})
+
+        return handle
+
+    for error_type, code in mapping:
+        app.add_exception_handler(error_type, build_handler(code))
+
+
+def _session_payload(outcome: object) -> AuthSessionResponse:
+    return AuthSessionResponse(
+        stage=outcome.stage,  # type: ignore[attr-defined]
+        mfa_required=outcome.mfa_required,  # type: ignore[attr-defined]
+        user=UserResponse.model_validate(outcome.user),  # type: ignore[attr-defined]
+    )
+
+
+def _session_token(request: Request, name: str) -> str:
+    """Token do cookie para as etapas que ainda não autenticam (segundo fator)."""
+    token = request.cookies.get(name)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="a session awaiting the second factor is required",
+        )
+    return token
+
+
+def _set_session_cookie(
+    response: Response, *, name: str, token: str, expires_at: datetime, secure: bool
+) -> None:
+    response.set_cookie(
+        key=name,
+        value=token,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        path="/",
+        expires=expires_at,
+    )
+
+
 def create_app(
-    service_factory: Callable[[], NotelyService] | None = None,
-    ingestion_factory: Callable[[], DocumentIngestionService] | None = None,
+    service_factory: Callable[[UUID], NotelyService] | None = None,
+    ingestion_factory: Callable[[UUID], DocumentIngestionService] | None = None,
     topic_provider_factory: Callable[[], TopicSuggestionProvider] | None = None,
     storage_factory: Callable[[], MinioObjectStorage] | None = None,
+    auth_service: AuthService | None = None,
 ) -> FastAPI:
     settings = Settings()
     engine = None
+    sessions: async_sessionmaker[AsyncSession] | None = None
 
-    if service_factory is None:
+    if service_factory is None or auth_service is None:
         engine = create_async_engine(settings.database_url, pool_pre_ping=True)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
-        service_factory = lambda: NotelyService(lambda: SqlAlchemyUnitOfWork(sessions))
+
+    if service_factory is None:
+        assert sessions is not None
+        service_factory = lambda user_id: NotelyService(
+            lambda: SqlAlchemyUnitOfWork(sessions, user_id=user_id)
+        )
+
+    if auth_service is None:
+        assert sessions is not None
+        cipher = SecretCipher(settings.auth_secret_key) if settings.auth_secret_key else None
+        auth_service = AuthService(
+            lambda: SqlAlchemyIdentityStore(sessions), cipher=cipher
+        )
 
     if storage_factory is None:
         storage_factory = lambda: MinioObjectStorage(
@@ -129,10 +281,10 @@ def create_app(
             settings.clamav_timeout_seconds,
         )
 
-        def default_ingestion_factory() -> DocumentIngestionService:
+        def default_ingestion_factory(user_id: UUID) -> DocumentIngestionService:
             assert service_factory is not None
             return DocumentIngestionService(
-                documents=service_factory(),
+                documents=service_factory(user_id),
                 scanner=scanner,
                 storage=storage_factory(),
                 max_upload_bytes=settings.max_upload_bytes,
@@ -149,27 +301,97 @@ def create_app(
         if engine is not None:
             await engine.dispose()
 
-    app = FastAPI(title="Notely API", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="Notely API", version="0.4.0", lifespan=lifespan)
+    app.state.service_factory = service_factory
+    app.state.ingestion_factory = ingestion_factory
+    app.state.storage_factory = storage_factory
+    app.state.topic_provider_factory = topic_provider_factory
+    app.state.auth_service = auth_service
+    app.state.session_cookie_name = settings.session_cookie_name
+    app.state.session_cookie_secure = settings.session_cookie_secure
 
-    def get_service() -> NotelyService:
-        assert service_factory is not None
-        return service_factory()
-
-    def get_ingestion() -> DocumentIngestionService:
-        assert ingestion_factory is not None
-        return ingestion_factory()
-
-    def get_storage() -> MinioObjectStorage:
-        assert storage_factory is not None
-        return storage_factory()
-
-    def get_topic_provider() -> TopicSuggestionProvider:
-        assert topic_provider_factory is not None
-        return topic_provider_factory()
+    register_auth_error_handlers(app)
 
     @app.get("/health", tags=["operations"])
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.post("/api/auth/login", response_model=AuthSessionResponse, tags=["auth"])
+    async def login(body: LoginRequest, response: Response) -> AuthSessionResponse:
+        outcome = await auth_service.login(email=body.email, password=body.password)
+        _set_session_cookie(
+            response,
+            name=settings.session_cookie_name,
+            token=outcome.token,
+            expires_at=outcome.expires_at,
+            secure=settings.session_cookie_secure,
+        )
+        return _session_payload(outcome)
+
+    @app.post("/api/auth/mfa", response_model=AuthSessionResponse, tags=["auth"])
+    async def complete_mfa(
+        body: MfaCodeRequest, request: Request, response: Response
+    ) -> AuthSessionResponse:
+        outcome = await auth_service.complete_mfa(
+            token=_session_token(request, settings.session_cookie_name), code=body.code
+        )
+        _set_session_cookie(
+            response,
+            name=settings.session_cookie_name,
+            token=outcome.token,
+            expires_at=outcome.expires_at,
+            secure=settings.session_cookie_secure,
+        )
+        return _session_payload(outcome)
+
+    @app.post("/api/auth/recovery", response_model=AuthSessionResponse, tags=["auth"])
+    async def complete_recovery(
+        body: MfaCodeRequest, request: Request, response: Response
+    ) -> AuthSessionResponse:
+        outcome = await auth_service.complete_recovery(
+            token=_session_token(request, settings.session_cookie_name), code=body.code
+        )
+        _set_session_cookie(
+            response,
+            name=settings.session_cookie_name,
+            token=outcome.token,
+            expires_at=outcome.expires_at,
+            secure=settings.session_cookie_secure,
+        )
+        return _session_payload(outcome)
+
+    @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT, tags=["auth"])
+    async def logout(request: Request, response: Response) -> None:
+        token = request.cookies.get(settings.session_cookie_name)
+        if token:
+            await auth_service.logout(token=token)
+        response.delete_cookie(settings.session_cookie_name, path="/")
+
+    @app.get("/api/auth/me", response_model=UserResponse, tags=["auth"])
+    async def me(user: User = Depends(get_current_user)) -> UserResponse:
+        return UserResponse.model_validate(user)
+
+    @app.post("/api/auth/mfa/enroll", response_model=EnrollmentResponse, tags=["auth"])
+    async def enroll(user: User = Depends(get_current_user)) -> EnrollmentResponse:
+        enrollment = await auth_service.start_enrollment(user_id=user.id)
+        return EnrollmentResponse(secret=enrollment.secret, uri=enrollment.uri)
+
+    @app.post(
+        "/api/auth/mfa/confirm", response_model=RecoveryCodesResponse, tags=["auth"]
+    )
+    async def confirm_enrollment(
+        body: MfaCodeRequest, user: User = Depends(get_current_user)
+    ) -> RecoveryCodesResponse:
+        codes = await auth_service.confirm_enrollment(user_id=user.id, code=body.code)
+        return RecoveryCodesResponse(recovery_codes=codes)
+
+    @app.post(
+        "/api/auth/mfa/disable", status_code=status.HTTP_204_NO_CONTENT, tags=["auth"]
+    )
+    async def disable_mfa(
+        body: DisableMfaRequest, user: User = Depends(get_current_user)
+    ) -> None:
+        await auth_service.disable_mfa(user_id=user.id, password=body.password)
 
     @app.post(
         "/api/documents", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED

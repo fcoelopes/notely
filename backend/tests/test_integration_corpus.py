@@ -21,6 +21,8 @@ from notely.db.models import (
 from notely.db.outbox import CONSUMER_CORPUS, SqlAlchemyOutboxStore
 from notely.db.uow import SqlAlchemyUnitOfWork
 from notely.workers.corpus import enqueue_missing_documents, run_batch
+from auth_helpers import TEST_USER_ID, ensure_test_user
+from auth_helpers import TEST_USER_ID
 from test_corpus import sample_pdf
 
 DATABASE_URL = os.environ.get(
@@ -52,12 +54,13 @@ async def context():
     except Exception as exc:
         await engine.dispose()
         pytest.skip(f"Corpus integration database is unavailable: {exc}")
+    await ensure_test_user(sessions)
     yield sessions
     await engine.dispose()
 
 
 async def register(sessions, content: bytes, *, page_count: int = 1):
-    service = NotelyService(lambda: SqlAlchemyUnitOfWork(sessions))
+    service = NotelyService(lambda: SqlAlchemyUnitOfWork(sessions, user_id=TEST_USER_ID))
     return await service.register_document(
         sha256=hashlib.sha256(content).hexdigest(),
         title="Fonte de teste",

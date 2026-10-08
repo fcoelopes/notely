@@ -12,6 +12,8 @@ from notely.api.app import create_app
 from notely.core.services import NotelyService
 from notely.db.models import StudySessionViewedPageRow
 from notely.db.uow import SqlAlchemyUnitOfWork
+from auth_helpers import TEST_USER_ID, ensure_test_user
+from auth_helpers import TEST_USER_ID, authenticate
 
 DATABASE_URL = os.environ.get(
     "NOTELY_TEST_DATABASE_URL", "postgresql+asyncpg://notely:notely@localhost:5432/notely_test"
@@ -32,6 +34,7 @@ async def context():
     except Exception as exc:
         await engine.dispose()
         pytest.skip(f"Progress integration database is unavailable: {exc}")
+    await ensure_test_user(sessions)
     yield sessions
     await engine.dispose()
 
@@ -44,7 +47,7 @@ async def make_document(service: NotelyService, pages: int):
 
 
 async def test_distinct_pages_session_weighting_detach_and_global_union(context) -> None:
-    service = NotelyService(lambda: SqlAlchemyUnitOfWork(context))
+    service = NotelyService(lambda: SqlAlchemyUnitOfWork(context, user_id=TEST_USER_ID))
     first = await make_document(service, 4)
     second = await make_document(service, 6)
     session = await service.create_study_session(theme="Estudo")
@@ -82,7 +85,7 @@ async def test_distinct_pages_session_weighting_detach_and_global_union(context)
         count = await db.scalar(select(func.count()).select_from(StudySessionViewedPageRow))
     assert count == 7
 
-    app = create_app(lambda: service)
+    app = authenticate(create_app(lambda user_id: service))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/reading-progress")
         assert response.status_code == 200
@@ -95,10 +98,10 @@ async def test_distinct_pages_session_weighting_detach_and_global_union(context)
 
 
 async def test_invalid_page_session_and_unlinked_document_do_not_write(context) -> None:
-    service = NotelyService(lambda: SqlAlchemyUnitOfWork(context))
+    service = NotelyService(lambda: SqlAlchemyUnitOfWork(context, user_id=TEST_USER_ID))
     document = await make_document(service, 4)
     session = await service.create_study_session()
-    app = create_app(lambda: service)
+    app = authenticate(create_app(lambda user_id: service))
     base = f"/api/study-sessions/{session.id}/documents/{document.id}/viewed-pages"
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         assert (await client.put(f"{base}/1")).status_code == 404

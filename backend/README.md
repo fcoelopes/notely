@@ -191,3 +191,33 @@ automaticamente: use `--backfill`, que enfileira só as anotações ainda sem co
 Nada é promovido a conhecimento autoral sem aceite explícito do usuário: as relações
 nascem `suggested` e a promoção grava `accepted_at`. Ver
 [ADR 0005](../docs/adr/0005-concept-extraction-as-inference.md).
+
+## Contas, sessão e segundo fator (issue #7)
+
+Todas as rotas de domínio exigem sessão ativa: sem cookie válido a API responde `401`
+(`/health` continua público). Não há tela de cadastro; as contas nascem por linha de
+comando:
+
+```bash
+backend/.venv/bin/python -m notely.cli bootstrap --email seu@email   # define a senha do dono
+backend/.venv/bin/python -m notely.cli create-user --email pessoa@email
+backend/.venv/bin/python -m notely.cli set-password --email seu@email
+backend/.venv/bin/python -m notely.cli list-users
+```
+
+Sem `--password`, o comando gera uma senha e a exibe uma única vez. O `bootstrap` adota o
+dono provisório criado pela migration, então o acervo existente continua da mesma pessoa.
+
+O segundo fator é TOTP (aplicativo autenticador) e ativar exige a chave de cifra do
+segredo:
+
+```bash
+export NOTELY_AUTH_SECRET_KEY="$(backend/.venv/bin/python -c \
+  'from notely.core.security import SecretCipher; print(SecretCipher.generate_key())')"
+```
+
+Fluxo HTTP: `POST /api/auth/login` e, com segundo fator ativo, `POST /api/auth/mfa` ou
+`POST /api/auth/recovery`; `GET /api/auth/me`; `POST /api/auth/logout`;
+`POST /api/auth/mfa/enroll`, `/confirm` e `/disable`. A sessão vai em cookie `HttpOnly`.
+Cada registro tem dono, aplicado pelo escopo da unidade de trabalho. Ver
+[ADR 0006](../docs/adr/0006-user-accounts-and-ownership.md).

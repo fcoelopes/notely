@@ -357,12 +357,15 @@ class AuthService:
             await store.commit()
         return codes
 
-    async def disable_mfa(self, *, user_id: UUID) -> None:
+    async def disable_mfa(self, *, user_id: UUID, password: str) -> None:
+        """Desativa o segundo fator. Exige a senha: sessão roubada não basta."""
         moment = self._now()
         async with self._store_factory() as store:
             user = await store.get_user(user_id)
             if user is None:
                 raise InvalidSessionError("user is unavailable")
+            if user.password_hash is None or not verify_password(password, user.password_hash):
+                raise InvalidCredentialsError("invalid credentials")
             await store.update_user(
                 replace(
                     user,

@@ -75,7 +75,7 @@ async def extract_annotation(
     relation = relation_for(AnnotationType(annotation.type)).value
     created = 0
     for concept in extracted:
-        concept_id = await _upsert_concept(session, concept)
+        concept_id = await _upsert_concept(session, concept, user_id=annotation.user_id)
         if await _add_relation(
             session=session,
             annotation_id=annotation.id,
@@ -89,12 +89,15 @@ async def extract_annotation(
     return created
 
 
-async def _upsert_concept(session: AsyncSession, concept: ExtractedConcept) -> UUID:
+async def _upsert_concept(
+    session: AsyncSession, concept: ExtractedConcept, *, user_id: UUID
+) -> UUID:
     normalized = normalize_concept_name(concept.name)
     statement = (
         insert(ConceptRow)
         .values(
             id=uuid4(),
+            user_id=user_id,
             name=concept.name,
             normalized_name=normalized,
             created_at=utc_now(),

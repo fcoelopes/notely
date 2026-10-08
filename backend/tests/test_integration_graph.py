@@ -31,6 +31,8 @@ from notely.db.outbox import SqlAlchemyOutboxStore
 from notely.db.uow import SqlAlchemyUnitOfWork
 from notely.workers import timescale
 from notely.workers.graph import rebuild, run_batch
+from auth_helpers import TEST_USER_ID, ensure_test_user
+from auth_helpers import TEST_USER_ID
 
 TEST_DATABASE_URL = os.environ.get(
     "NOTELY_TEST_DATABASE_URL",
@@ -45,7 +47,7 @@ class IntegrationContext:
         self.engine = engine
         self.sessions = async_sessionmaker(engine, expire_on_commit=False)
         self.store = SqlAlchemyOutboxStore(self.sessions)
-        self.service = NotelyService(lambda: SqlAlchemyUnitOfWork(self.sessions))
+        self.service = NotelyService(lambda: SqlAlchemyUnitOfWork(self.sessions, user_id=TEST_USER_ID))
         self.graph = AgeGraph()
 
 
@@ -70,6 +72,7 @@ async def context() -> AsyncIterator[IntegrationContext]:
         await db.execute(text("delete from documents"))
         await db.commit()
 
+    await ensure_test_user(context.sessions)
     yield context
     await engine.dispose()
 

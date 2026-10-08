@@ -23,7 +23,19 @@ class Base(DeclarativeBase):
     pass
 
 
-class DocumentRow(Base):
+class OwnedRow:
+    """Registro com dono.
+
+    O valor vem do escopo da unidade de trabalho. Tabelas puramente derivadas não usam
+    este mixin: o dono delas é resolvido pelo registro de origem (ver migration 0011).
+    """
+
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+
+
+class DocumentRow(OwnedRow, Base):
     __tablename__ = "documents"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -81,7 +93,7 @@ class DocumentCorpusChunkRow(Base):
     )
 
 
-class AnnotationRow(Base):
+class AnnotationRow(OwnedRow, Base):
     __tablename__ = "annotations"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -108,7 +120,7 @@ class AnnotationRow(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class ReadingSessionRow(Base):
+class ReadingSessionRow(OwnedRow, Base):
     __tablename__ = "reading_sessions"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -144,7 +156,7 @@ class ReaderEventRow(Base):
     metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
 
 
-class StudySessionRow(Base):
+class StudySessionRow(OwnedRow, Base):
     __tablename__ = "study_sessions"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -155,7 +167,7 @@ class StudySessionRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class StudySessionDocumentRow(Base):
+class StudySessionDocumentRow(OwnedRow, Base):
     __tablename__ = "study_session_documents"
     __table_args__ = (UniqueConstraint("study_session_id", "document_id"),)
 
@@ -170,7 +182,7 @@ class StudySessionDocumentRow(Base):
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class StudySessionViewedPageRow(Base):
+class StudySessionViewedPageRow(OwnedRow, Base):
     __tablename__ = "study_session_viewed_pages"
 
     study_session_id: Mapped[UUID] = mapped_column(
@@ -185,7 +197,7 @@ class StudySessionViewedPageRow(Base):
     first_viewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class AISuggestionRow(Base):
+class AISuggestionRow(OwnedRow, Base):
     __tablename__ = "ai_suggestions"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -201,7 +213,7 @@ class AISuggestionRow(Base):
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class CurationRequestRow(Base):
+class CurationRequestRow(OwnedRow, Base):
     __tablename__ = "question_curation_requests"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -220,7 +232,7 @@ class CurationRequestRow(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class CuratedSourceRow(Base):
+class CuratedSourceRow(OwnedRow, Base):
     __tablename__ = "question_curated_sources"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -244,7 +256,7 @@ class CuratedSourceRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class OutboxEventRow(Base):
+class OutboxEventRow(OwnedRow, Base):
     __tablename__ = "outbox_events"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -294,7 +306,7 @@ class OutboxDeliveryRow(Base):
     last_error: Mapped[str | None] = mapped_column(Text)
 
 
-class ConceptRow(Base):
+class ConceptRow(OwnedRow, Base):
     __tablename__ = "concepts"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)

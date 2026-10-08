@@ -43,9 +43,16 @@ from notely.db.models import (
 
 
 class SqlAlchemyUnitOfWork:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self, session_factory: async_sessionmaker[AsyncSession], *, user_id: UUID
+    ) -> None:
         self._session_factory = session_factory
+        self._user_id = user_id
         self.session: AsyncSession | None = None
+
+    @property
+    def user_id(self) -> UUID:
+        return self._user_id
 
     async def __aenter__(self) -> SqlAlchemyUnitOfWork:
         self.session = self._session_factory()
@@ -69,19 +76,27 @@ class SqlAlchemyUnitOfWork:
         return self.session
 
     async def get_document(self, document_id: UUID) -> Document | None:
-        row = await self._active_session().get(DocumentRow, document_id)
+        row = await self._active_session().scalar(
+            select(DocumentRow).where(
+                DocumentRow.id == document_id, DocumentRow.user_id == self._user_id
+            )
+        )
         return _to_document(row) if row else None
 
     async def get_document_by_sha256(self, sha256: str) -> Document | None:
         row = await self._active_session().scalar(
-            select(DocumentRow).where(DocumentRow.sha256 == sha256)
+            select(DocumentRow).where(
+                DocumentRow.sha256 == sha256, DocumentRow.user_id == self._user_id
+            )
         )
         return _to_document(row) if row else None
 
     async def list_documents(self) -> list[Document]:
         rows = (
             await self._active_session().scalars(
-                select(DocumentRow).order_by(DocumentRow.created_at.desc(), DocumentRow.id)
+                select(DocumentRow)
+                .where(DocumentRow.user_id == self._user_id)
+                .order_by(DocumentRow.created_at.desc(), DocumentRow.id)
             )
         ).all()
         return [_to_document(row) for row in rows]
@@ -90,6 +105,7 @@ class SqlAlchemyUnitOfWork:
         self._active_session().add(
             DocumentRow(
                 id=document.id,
+                user_id=self._user_id,
                 sha256=document.sha256,
                 title=document.title,
                 filename=document.filename,
@@ -105,6 +121,7 @@ class SqlAlchemyUnitOfWork:
         self._active_session().add(
             AnnotationRow(
                 id=annotation.id,
+                user_id=self._user_id,
                 document_id=annotation.document_id,
                 page_number=annotation.page_number,
                 type=annotation.type.value,
@@ -123,12 +140,16 @@ class SqlAlchemyUnitOfWork:
         )
 
     async def get_annotation(self, annotation_id: UUID) -> Annotation | None:
-        row = await self._active_session().get(AnnotationRow, annotation_id)
+        row = await self._active_session().scalar(
+            select(AnnotationRow).where(
+                AnnotationRow.id == annotation_id, AnnotationRow.user_id == self._user_id
+            )
+        )
         return _to_annotation(row) if row and row.deleted_at is None else None
 
     async def add_curation_request(self, request: CurationRequest) -> None:
         self._active_session().add(CurationRequestRow(
-            id=request.id, annotation_id=request.annotation_id,
+            id=request.id, user_id=self._user_id, annotation_id=request.annotation_id,
             study_session_id=request.study_session_id, version=request.version,
             status=request.status.value, attempt_count=request.attempt_count,
             last_error=request.last_error, created_at=request.created_at,
@@ -137,12 +158,20 @@ class SqlAlchemyUnitOfWork:
 
     async def get_curation_request(self, annotation_id: UUID) -> CurationRequest | None:
         row = await self._active_session().scalar(
-            select(CurationRequestRow).where(CurationRequestRow.annotation_id == annotation_id)
+            select(CurationRequestRow).where(
+                CurationRequestRow.annotation_id == annotation_id,
+                CurationRequestRow.user_id == self._user_id,
+            )
         )
         return _to_curation_request(row) if row else None
 
     async def update_curation_request(self, request: CurationRequest) -> None:
-        row = await self._active_session().get(CurationRequestRow, request.id)
+        row = await self._active_session().scalar(
+            select(CurationRequestRow).where(
+                CurationRequestRow.id == request.id,
+                CurationRequestRow.user_id == self._user_id,
+            )
+        )
         if row is None:
             raise LookupError("curation request does not exist")
         row.version = request.version
@@ -154,7 +183,10 @@ class SqlAlchemyUnitOfWork:
 
     async def list_curated_sources(self, request_id: UUID) -> list[CuratedSource]:
         rows = (await self._active_session().scalars(
-            select(CuratedSourceRow).where(CuratedSourceRow.request_id == request_id)
+            select(CuratedSourceRow).where(
+                CuratedSourceRow.request_id == request_id,
+                CuratedSourceRow.user_id == self._user_id,
+            )
             .order_by(CuratedSourceRow.rank)
         )).all()
         return [_to_curated_source(row) for row in rows]
@@ -183,6 +215,7 @@ class SqlAlchemyUnitOfWork:
         self._active_session().add(
             OutboxEventRow(
                 id=event.id,
+                user_id=self._user_id,
                 aggregate_type=event.aggregate_type,
                 aggregate_id=event.aggregate_id,
                 event_type=event.event_type,
@@ -200,6 +233,7 @@ class SqlAlchemyUnitOfWork:
                 select(AnnotationRow)
                 .where(
                     AnnotationRow.document_id == document_id,
+                    AnnotationRow.user_id == self._user_id,
                     AnnotationRow.deleted_at.is_(None),
                 )
                 .order_by(AnnotationRow.page_number, AnnotationRow.created_at)
@@ -208,12 +242,10 @@ class SqlAlchemyUnitOfWork:
         return [_to_annotation(row) for row in rows]
 
     async def add_reading_session(self, session: ReadingSession) -> None:
-        self._active_session().add(_reading_session_row(session))
+        self._active_session().add(_reading_session_row(session, user_id=self._user_id))
 
     async def update_reading_session(self, session: ReadingSession) -> None:
-        row = await self._active_session().get(ReadingSessionRow, session.id)
-        if row is None:
-            raise LookupError(f"reading session {session.id} does not exist")
+        row = await self._owned(ReadingSessionRow, session.id, "reading session")
         row.ended_at = session.ended_at
         row.start_page = session.start_page
         row.end_page = session.end_page
@@ -221,29 +253,49 @@ class SqlAlchemyUnitOfWork:
         row.updated_at = session.updated_at
 
     async def get_reading_session(self, session_id: UUID) -> ReadingSession | None:
-        row = await self._active_session().get(ReadingSessionRow, session_id)
+        row = await self._active_session().scalar(
+            select(ReadingSessionRow).where(
+                ReadingSessionRow.id == session_id,
+                ReadingSessionRow.user_id == self._user_id,
+            )
+        )
         return _to_reading_session(row) if row else None
 
     async def add_study_session(self, session: StudySession) -> None:
-        self._active_session().add(_study_session_row(session))
+        self._active_session().add(_study_session_row(session, user_id=self._user_id))
 
     async def update_study_session(self, session: StudySession) -> None:
-        row = await self._active_session().get(StudySessionRow, session.id)
-        if row is None:
-            raise LookupError(f"study session {session.id} does not exist")
+        row = await self._owned(StudySessionRow, session.id, "study session")
         row.theme = session.theme
         row.theme_origin = session.theme_origin.value if session.theme_origin else None
         row.theme_updated_at = session.theme_updated_at
         row.updated_at = session.updated_at
 
     async def get_study_session(self, session_id: UUID) -> StudySession | None:
-        row = await self._active_session().get(StudySessionRow, session_id)
+        row = await self._active_session().scalar(
+            select(StudySessionRow).where(
+                StudySessionRow.id == session_id, StudySessionRow.user_id == self._user_id
+            )
+        )
         return _to_study_session(row) if row else None
+
+    async def _owned(self, row_type: type, row_id: UUID, label: str):
+        """Busca a linha exigindo o dono do escopo; registro alheio não é encontrado."""
+        row = await self._active_session().scalar(
+            select(row_type).where(
+                row_type.id == row_id, row_type.user_id == self._user_id
+            )
+        )
+        if row is None:
+            raise LookupError(f"{label} {row_id} does not exist")
+        return row
 
     async def list_study_sessions(self) -> list[StudySession]:
         rows = (
             await self._active_session().scalars(
-                select(StudySessionRow).order_by(
+                select(StudySessionRow)
+                .where(StudySessionRow.user_id == self._user_id)
+                .order_by(
                     StudySessionRow.updated_at.desc(),
                     StudySessionRow.created_at.desc(),
                     StudySessionRow.id,
@@ -256,6 +308,7 @@ class SqlAlchemyUnitOfWork:
         self._active_session().add(
             StudySessionDocumentRow(
                 id=link.id,
+                user_id=self._user_id,
                 study_session_id=link.study_session_id,
                 document_id=link.document_id,
                 position=link.position,
@@ -270,6 +323,7 @@ class SqlAlchemyUnitOfWork:
             select(StudySessionDocumentRow).where(
                 StudySessionDocumentRow.study_session_id == session_id,
                 StudySessionDocumentRow.document_id == document_id,
+                StudySessionDocumentRow.user_id == self._user_id,
             )
         )
         return _to_study_session_document(row) if row else None
@@ -280,7 +334,10 @@ class SqlAlchemyUnitOfWork:
         rows = (
             await self._active_session().scalars(
                 select(StudySessionDocumentRow)
-                .where(StudySessionDocumentRow.study_session_id == session_id)
+                .where(
+                    StudySessionDocumentRow.study_session_id == session_id,
+                    StudySessionDocumentRow.user_id == self._user_id,
+                )
                 .order_by(
                     StudySessionDocumentRow.position,
                     StudySessionDocumentRow.added_at,
@@ -295,13 +352,15 @@ class SqlAlchemyUnitOfWork:
             delete(StudySessionDocumentRow).where(
                 StudySessionDocumentRow.study_session_id == session_id,
                 StudySessionDocumentRow.document_id == document_id,
+                StudySessionDocumentRow.user_id == self._user_id,
             )
         )
 
     async def next_study_session_position(self, session_id: UUID) -> int:
         highest = await self._active_session().scalar(
             select(func.max(StudySessionDocumentRow.position)).where(
-                StudySessionDocumentRow.study_session_id == session_id
+                StudySessionDocumentRow.study_session_id == session_id,
+                StudySessionDocumentRow.user_id == self._user_id,
             )
         )
         return 0 if highest is None else int(highest) + 1
@@ -311,6 +370,7 @@ class SqlAlchemyUnitOfWork:
     ) -> None:
         await self._active_session().execute(
             insert(StudySessionViewedPageRow).values(
+                user_id=self._user_id,
                 study_session_id=session_id,
                 document_id=document_id,
                 page_number=page_number,
@@ -334,6 +394,10 @@ class SqlAlchemyUnitOfWork:
                 visit.study_session_id == StudySessionDocumentRow.study_session_id,
                 visit.document_id == StudySessionDocumentRow.document_id,
             ))
+            .where(
+                StudySessionDocumentRow.user_id == self._user_id,
+                DocumentRow.user_id == self._user_id,
+            )
             .group_by(
                 StudySessionDocumentRow.study_session_id,
                 DocumentRow.id,
@@ -356,6 +420,7 @@ class SqlAlchemyUnitOfWork:
                 func.count(func.distinct(visit.page_number)),
             )
             .outerjoin(visit, visit.document_id == DocumentRow.id)
+            .where(DocumentRow.user_id == self._user_id)
             .group_by(DocumentRow.id, DocumentRow.page_count)
         )
         if document_id is not None:
@@ -367,6 +432,7 @@ class SqlAlchemyUnitOfWork:
         self._active_session().add(
             AISuggestionRow(
                 id=suggestion.id,
+                user_id=self._user_id,
                 suggestion_type=suggestion.suggestion_type,
                 subject_type=suggestion.subject_type,
                 subject_id=suggestion.subject_id,
@@ -381,15 +447,18 @@ class SqlAlchemyUnitOfWork:
         )
 
     async def update_ai_suggestion(self, suggestion: AISuggestion) -> None:
-        row = await self._active_session().get(AISuggestionRow, suggestion.id)
-        if row is None:
-            raise LookupError(f"suggestion {suggestion.id} does not exist")
+        row = await self._owned(AISuggestionRow, suggestion.id, "suggestion")
         row.status = suggestion.status.value
         row.accepted_at = suggestion.accepted_at
         row.rejected_at = suggestion.rejected_at
 
     async def get_ai_suggestion(self, suggestion_id: UUID) -> AISuggestion | None:
-        row = await self._active_session().get(AISuggestionRow, suggestion_id)
+        row = await self._active_session().scalar(
+            select(AISuggestionRow).where(
+                AISuggestionRow.id == suggestion_id,
+                AISuggestionRow.user_id == self._user_id,
+            )
+        )
         return _to_ai_suggestion(row) if row else None
 
     async def list_ai_suggestions(
@@ -401,6 +470,7 @@ class SqlAlchemyUnitOfWork:
                 .where(
                     AISuggestionRow.subject_type == subject_type,
                     AISuggestionRow.subject_id == subject_id,
+                    AISuggestionRow.user_id == self._user_id,
                 )
                 .order_by(AISuggestionRow.created_at.desc(), AISuggestionRow.id)
             )
@@ -411,9 +481,10 @@ class SqlAlchemyUnitOfWork:
         await self._active_session().commit()
 
 
-def _reading_session_row(session: ReadingSession) -> ReadingSessionRow:
+def _reading_session_row(session: ReadingSession, *, user_id: UUID) -> ReadingSessionRow:
     return ReadingSessionRow(
         id=session.id,
+        user_id=user_id,
         document_id=session.document_id,
         filename_snapshot=session.filename_snapshot,
         started_at=session.started_at,
@@ -441,9 +512,10 @@ def _to_reading_session(row: ReadingSessionRow) -> ReadingSession:
     )
 
 
-def _study_session_row(session: StudySession) -> StudySessionRow:
+def _study_session_row(session: StudySession, *, user_id: UUID) -> StudySessionRow:
     return StudySessionRow(
         id=session.id,
+        user_id=user_id,
         theme=session.theme,
         theme_origin=session.theme_origin.value if session.theme_origin else None,
         theme_updated_at=session.theme_updated_at,

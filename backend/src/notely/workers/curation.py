@@ -145,6 +145,7 @@ async def run_batch(
                 for rank, (candidate, reason) in enumerate(validated, 1):
                     session.add(CuratedSourceRow(
                         id=uuid4(), request_id=request.id,
+                        user_id=request.user_id,
                         document_id=candidate.document_id,
                         page_number=candidate.page_number,
                         chunk_number=candidate.chunk_number,

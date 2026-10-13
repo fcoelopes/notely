@@ -46,6 +46,10 @@ O layout se adapta a telas pequenas; os controles de página e zoom têm nomes
 acessíveis e os elementos interativos mostram foco por teclado. A interface usa
 fontes do sistema, sem buscar fontes externas.
 
+O Reader permite marcar manualmente a página atual de cada PDF. Ao reabrir uma
+sessão, o documento começa nessa página; o controle também permite voltar ao
+marcador e removê-lo. A marcação não avança sozinha ao navegar.
+
 Ao mudar de página, documento ou zoom, a seleção ainda não salva é descartada
 para evitar marcações com posições obsoletas. Falhas de carregamento do arquivo
 ou de renderização de página aparecem no Reader em português.
@@ -63,6 +67,9 @@ Para verificar o layout de rolagem com Chromium e Playwright disponíveis:
 `node tests/pdf-scroll.cjs [caminho-do-playwright] [executável-do-chromium]`.
 O teste usa uma página longa simulada e verifica o acesso ao seu final em três
 larguras de tela.
+
+Para verificar que os cartões da biblioteca não se sobrepõem em desktop, tablet e
+celular: `node tests/library-layout.cjs [caminho-do-playwright] [executável-do-chromium-headless-shell]`.
 
 A apresentação do Reader segue o padrão visual de um leitor PDF: abas, barra
 compacta de página e zoom, página centralizada sobre fundo cinza e rolagem

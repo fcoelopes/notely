@@ -218,6 +218,41 @@ def test_downgrade_cannot_discard_reading_progress(database: str, tmp_path: Path
     assert preserved.stdout.strip() == "0007|1"
 
 
+def test_downgrade_cannot_discard_document_bookmark(database: str, tmp_path: Path) -> None:
+    assert migrate(database, tmp_path).returncode == 0
+    document_id = str(uuid4())
+    inserted = docker("psql", "-v", "ON_ERROR_STOP=1", "-U", "notely", "-d", database,
+                      input=("INSERT INTO documents (id, user_id, sha256, title, filename, "
+                             "page_count, storage_uri, created_at, updated_at) VALUES "
+                             f"('{document_id}', '{BOOTSTRAP_USER}', '{'d' * 64}', 'Marcado', "
+                             "'test.pdf', 3, 'test://pdf', now(), now());"
+                             "INSERT INTO document_bookmarks "
+                             "(user_id, document_id, page_number, created_at, updated_at) "
+                             f"VALUES ('{BOOTSTRAP_USER}', '{document_id}', 2, now(), now());"))
+    assert inserted.returncode == 0, inserted.stderr
+    preview = subprocess.run(
+        [sys.executable, str(ROLLBACK), "--database", database, "--target", "0013",
+         "--backup-dir", str(tmp_path)],
+        text=True, capture_output=True, cwd=ROOT, check=False,
+    )
+    assert preview.returncode == 0, preview.stderr
+    assert "Protected data: document bookmarks" in preview.stdout
+    environment = os.environ | {
+        "NOTELY_DATABASE_URL": f"postgresql+asyncpg://notely:notely@localhost:5432/{database}"
+    }
+    direct = subprocess.run(
+        [str(ROOT / "backend" / ".venv" / "bin" / "alembic"), "-c", "alembic.ini",
+         "downgrade", "0013"],
+        text=True, capture_output=True, cwd=ROOT, env=environment, check=False,
+    )
+    assert direct.returncode != 0
+    assert "would discard: document bookmarks" in direct.stderr
+    preserved = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
+                       "select (select version_num from alembic_version), "
+                       "(select count(*) from document_bookmarks)")
+    assert preserved.stdout.strip() == "0014|1"
+
+
 def test_backup_restores_to_new_database_and_startup_can_use_it(database: str, tmp_path: Path) -> None:
     assert migrate(database, tmp_path).returncode == 0
     document_id = str(uuid4())

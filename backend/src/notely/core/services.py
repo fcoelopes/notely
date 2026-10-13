@@ -14,6 +14,7 @@ from notely.core.models import (
     CurationRequest,
     CurationStatus,
     Document,
+    DocumentBookmark,
     OutboxEvent,
     ReadingSession,
     StudySession,
@@ -105,6 +106,36 @@ class NotelyService:
             if document is None:
                 raise DocumentNotFoundError(str(document_id))
             return document
+
+    async def list_document_bookmarks(self) -> list[DocumentBookmark]:
+        async with self._uow_factory() as uow:
+            return await uow.list_document_bookmarks()
+
+    async def set_document_bookmark(
+        self, *, document_id: UUID, page_number: int
+    ) -> DocumentBookmark:
+        async with self._uow_factory() as uow:
+            document = await uow.get_document(document_id)
+            if document is None:
+                raise DocumentNotFoundError(str(document_id))
+            if not 1 <= page_number <= document.page_count:
+                raise PageOutsideDocumentError(
+                    f"page {page_number} is outside document page count {document.page_count}"
+                )
+            now = utc_now()
+            saved = await uow.save_document_bookmark(DocumentBookmark(
+                document_id=document_id, page_number=page_number,
+                created_at=now, updated_at=now,
+            ))
+            await uow.commit()
+            return saved
+
+    async def delete_document_bookmark(self, document_id: UUID) -> None:
+        async with self._uow_factory() as uow:
+            if await uow.get_document(document_id) is None:
+                raise DocumentNotFoundError(str(document_id))
+            await uow.delete_document_bookmark(document_id)
+            await uow.commit()
 
     async def register_document(
         self,

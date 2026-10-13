@@ -23,6 +23,7 @@ BOOTSTRAP_USER = UUID("00000000-0000-0000-0000-000000000001")
 # Tabelas de domínio que passaram a ter dono.
 OWNED_TABLES = (
     "documents",
+    "document_bookmarks",
     "annotations",
     "reading_sessions",
     "study_sessions",

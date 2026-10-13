@@ -40,6 +40,8 @@ from notely.api.schemas import (
     UserResponse,
     DocumentCreate,
     DocumentResponse,
+    DocumentBookmarkResponse,
+    DocumentBookmarkSet,
     ReadingSessionResponse,
     ReadingProgressSnapshotResponse,
     ReadingProgressUpdateResponse,
@@ -516,6 +518,45 @@ def create_app(
     async def list_documents(service: NotelyService = Depends(get_service)) -> list[DocumentResponse]:
         documents = await service.list_documents()
         return [DocumentResponse.model_validate(document) for document in documents]
+
+    @app.get("/api/document-bookmarks", response_model=list[DocumentBookmarkResponse])
+    async def list_document_bookmarks(
+        service: NotelyService = Depends(get_service),
+    ) -> list[DocumentBookmarkResponse]:
+        bookmarks = await service.list_document_bookmarks()
+        return [DocumentBookmarkResponse.model_validate(bookmark) for bookmark in bookmarks]
+
+    @app.put(
+        "/api/documents/{document_id}/bookmark",
+        response_model=DocumentBookmarkResponse,
+    )
+    async def set_document_bookmark(
+        document_id: UUID,
+        body: DocumentBookmarkSet,
+        service: NotelyService = Depends(get_service),
+    ) -> DocumentBookmarkResponse:
+        try:
+            bookmark = await service.set_document_bookmark(
+                document_id=document_id, page_number=body.page_number
+            )
+        except DocumentNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="document not found") from exc
+        except PageOutsideDocumentError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return DocumentBookmarkResponse.model_validate(bookmark)
+
+    @app.delete(
+        "/api/documents/{document_id}/bookmark",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_document_bookmark(
+        document_id: UUID,
+        service: NotelyService = Depends(get_service),
+    ) -> None:
+        try:
+            await service.delete_document_bookmark(document_id)
+        except DocumentNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="document not found") from exc
 
     @app.get("/api/documents/{document_id}/content")
     async def download_document(

@@ -54,6 +54,14 @@ multipart PDF
 
 Qualquer falha ou resposta desconhecida do ClamAV rejeita o upload. O limite padrão é 100 MiB.
 
+## Marcador de página
+
+O marcador manual por PDF e usuário fica em PostgreSQL, separado do progresso de
+páginas visualizadas. `GET /api/document-bookmarks` lista os marcadores;
+`PUT /api/documents/{document_id}/bookmark` recebe `{"page_number": 12}`;
+`DELETE` no mesmo caminho remove o marcador. A migration `0014` protege os dados
+num rollback. Veja [a regra do marcador](../docs/marcador-pagina.md).
+
 ## Trilha temporal de leitura
 
 O Reader abre uma sessão de leitura na primeira interação real com o documento e envia

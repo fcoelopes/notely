@@ -49,6 +49,20 @@ class DocumentRow(OwnedRow, Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class DocumentBookmarkRow(OwnedRow, Base):
+    __tablename__ = "document_bookmarks"
+
+    document_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class DocumentCorpusIndexRow(Base):
     __tablename__ = "document_corpus_index"
 

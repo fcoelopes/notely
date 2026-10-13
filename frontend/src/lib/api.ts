@@ -4,6 +4,7 @@ import type {
   AnnotationPosition,
   AnnotationType,
   DocumentRecord,
+  DocumentBookmark,
   DocumentSummary,
   Enrollment,
   ReadingSession,
@@ -80,6 +81,23 @@ export async function uploadDocument(file: File, pageCount: number): Promise<Doc
     credentials: "include",
   });
   return parseResponse<DocumentRecord>(response);
+}
+
+export function listDocumentBookmarks(): Promise<DocumentBookmark[]> {
+  return request("/api/document-bookmarks");
+}
+
+export function setDocumentBookmark(
+  documentId: string, pageNumber: number,
+): Promise<DocumentBookmark> {
+  return request(`/api/documents/${documentId}/bookmark`, {
+    method: "PUT",
+    body: JSON.stringify({ page_number: pageNumber }),
+  });
+}
+
+export function deleteDocumentBookmark(documentId: string): Promise<void> {
+  return request(`/api/documents/${documentId}/bookmark`, { method: "DELETE" });
 }
 
 export function documentContentUrl(documentId: string): string {

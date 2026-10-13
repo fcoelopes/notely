@@ -14,6 +14,7 @@ from notely.core.models import (
     CurationRequest,
     CuratedSource,
     Document,
+    DocumentBookmark,
     OutboxEvent,
     ReadingSession,
     StudySession,
@@ -84,6 +85,12 @@ class UnitOfWork(Protocol):
     async def list_documents(self) -> list[Document]: ...
 
     async def add_document(self, document: Document) -> None: ...
+
+    async def list_document_bookmarks(self) -> list[DocumentBookmark]: ...
+
+    async def save_document_bookmark(self, bookmark: DocumentBookmark) -> DocumentBookmark: ...
+
+    async def delete_document_bookmark(self, document_id: UUID) -> None: ...
 
     async def add_annotation(self, annotation: Annotation) -> None: ...
 

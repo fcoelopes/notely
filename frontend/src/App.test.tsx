@@ -38,6 +38,7 @@ const api = vi.hoisted(() => ({
   createAnnotation: vi.fn(),
   createStudySession: vi.fn(),
   detachDocumentFromSession: vi.fn(),
+  deleteDocumentBookmark: vi.fn(),
   getStudySession: vi.fn(),
   getReadingProgress: vi.fn(),
   recordViewedPage: vi.fn(),
@@ -45,10 +46,12 @@ const api = vi.hoisted(() => ({
   retryQuestionSources: vi.fn(),
   listAnnotations: vi.fn(),
   listDocuments: vi.fn(),
+  listDocumentBookmarks: vi.fn(),
   listStudySessions: vi.fn(),
   rejectThemeSuggestion: vi.fn(),
   requestThemeSuggestion: vi.fn(),
   setStudySessionTheme: vi.fn(),
+  setDocumentBookmark: vi.fn(),
   uploadDocument: vi.fn(),
 }));
 const readPageCount = vi.hoisted(() => vi.fn());
@@ -215,6 +218,12 @@ describe("App", () => {
     api.currentAccount.mockResolvedValue(testAccount);
     api.logout.mockResolvedValue(undefined);
     api.listDocuments.mockResolvedValue([]);
+    api.listDocumentBookmarks.mockResolvedValue([]);
+    api.deleteDocumentBookmark.mockResolvedValue(undefined);
+    api.setDocumentBookmark.mockImplementation((documentId: string, pageNumber: number) => Promise.resolve({
+      document_id: documentId, page_number: pageNumber,
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+    }));
     api.listStudySessions.mockResolvedValue([]);
     api.getReadingProgress.mockResolvedValue({ documents: {}, sessions: {} });
     api.recordViewedPage.mockImplementation((sessionId: string, documentId: string) => Promise.resolve({
@@ -610,6 +619,61 @@ describe("App", () => {
     await waitFor(() =>
       expect(document.querySelector(".page-controls span")?.textContent).toBe("/ 3"),
     );
+  });
+
+  it("opens on the saved bookmark and changes it only when asked", async () => {
+    api.listDocumentBookmarks.mockResolvedValue([
+      { document_id: "doc-1", page_number: 3, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+      { document_id: "doc-2", page_number: 2, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+    ]);
+    await startSession({ documents: [
+      sessionDocument("doc-1", "Artigo", 0, 5),
+      sessionDocument("doc-2", "Anexo", 1, 4),
+    ] });
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "3");
+    fireEvent.click(screen.getAllByRole("tab")[1]);
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
+    fireEvent.click(screen.getAllByRole("tab")[0]);
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "3");
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "4");
+    expect(api.setDocumentBookmark).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Mover marcador para a página atual" }));
+    await waitFor(() => expect(api.setDocumentBookmark).toHaveBeenCalledWith("doc-1", 4));
+    expect(await screen.findByRole("button", { name: "Ir para a página marcada 4" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Página anterior" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ir para a página marcada 4" }));
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "4");
+    fireEvent.click(screen.getByRole("button", { name: "Remover marcador" }));
+    await waitFor(() => expect(api.deleteDocumentBookmark).toHaveBeenCalledWith("doc-1"));
+    expect(screen.getByRole("button", { name: "Marcar página atual" })).toBeInTheDocument();
+  });
+
+  it("keeps reading when bookmark loading or saving fails", async () => {
+    api.listDocumentBookmarks.mockRejectedValue(new Error("offline"));
+    api.setDocumentBookmark.mockRejectedValue(new Error("offline"));
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0, 3)] });
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "1");
+    fireEvent.click(screen.getByRole("button", { name: "Marcar página atual" }));
+    await waitFor(() => expect(api.setDocumentBookmark).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /Ir para a página marcada/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
+  });
+
+  it("keeps a bookmark visible when removal fails", async () => {
+    api.listDocumentBookmarks.mockResolvedValue([{
+      document_id: "doc-1", page_number: 2,
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+    }]);
+    api.deleteDocumentBookmark.mockRejectedValue(new Error("offline"));
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0, 3)] });
+    fireEvent.click(screen.getByRole("button", { name: "Remover marcador" }));
+    await waitFor(() => expect(api.deleteDocumentBookmark).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Ir para a página marcada 2" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "3");
   });
 
   it("keeps navigating after an annotation is saved", async () => {

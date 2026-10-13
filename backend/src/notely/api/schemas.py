@@ -37,6 +37,19 @@ class DocumentResponse(DocumentCreate):
     updated_at: datetime
 
 
+class DocumentBookmarkSet(BaseModel):
+    page_number: int = Field(ge=1)
+
+
+class DocumentBookmarkResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    document_id: UUID
+    page_number: int
+    created_at: datetime
+    updated_at: datetime
+
+
 class AnnotationCreate(BaseModel):
     document_id: UUID
     page_number: int = Field(ge=1)

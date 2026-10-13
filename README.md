@@ -88,6 +88,7 @@ Ler sobre um tema normalmente significa ler vários arquivos. O Notely reúne es
 - sessões abertas e documentos já ingeridos ficam disponíveis para retomar a leitura, com o PDF servido pela API a partir do armazenamento de objetos.
 - a visão geral resume as leituras recentes; sessões e documentos completos ficam em coleções com busca, ordenação e paginação.
 - o Reader e a biblioteca mostram o progresso de páginas visualizadas por arquivo e por sessão, conforme [a regra de cálculo](docs/progresso-leitura.md).
+- cada PDF pode ter um [marcador de página](docs/marcador-pagina.md) escolhido pelo usuário para retomar a leitura, independente do progresso.
 
 ## Reader-first, não reader-only
 

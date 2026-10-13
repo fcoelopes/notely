@@ -52,6 +52,9 @@ DOWNGRADE_GUARDS: dict[str, tuple[tuple[str, ...], tuple[tuple[str, str], ...]]]
     "0012": ((), ()),
     # A configuração de modelo é recadastrável pelo usuário; não há dado autoral aqui.
     "0013": ((), ()),
+    "0014": (("document_bookmarks",), (
+        ("document bookmarks", "SELECT EXISTS (SELECT 1 FROM document_bookmarks)"),
+    )),
 }
 
 

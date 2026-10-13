@@ -126,7 +126,7 @@ button { color: inherit; }
 .library-search { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 6px; padding: 9px 12px; background: #fff; color: var(--muted); }
 .library-search input { min-width: 0; width: 165px; background: transparent; border: 0; outline: none; font-size: 11px; color: var(--ink); }
 .library-search:focus-within { outline: 2px solid var(--sage); outline-offset: 2px; }
-.library-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.library-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
 .library-columns--single { grid-template-columns: 1fr; }
 .library-block { min-width: 0; }
 .collection-title { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-height: 28px; margin-bottom: 14px; }
@@ -138,7 +138,8 @@ button { color: inherit; }
 .empty-symbol { font-size: 24px; color: #9ca993; }
 .library-empty h4 { font: 400 16px Georgia, serif; margin: 12px 0 8px; }
 .library-empty p { max-width: 280px; font-size: 11px; line-height: 1.7; color: var(--muted); margin: 0; }
-.session-list, .document-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.session-list, .document-list { min-width: 0; list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.session-list li, .document-list li { min-width: 0; }
 .library-columns--single .session-list, .library-columns--single .document-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .session-list button, .document-list li { width: 100%; min-height: 116px; display: flex; align-items: center; gap: 12px; border: 1px solid var(--line); background: white; border-radius: 7px; padding: 15px 16px; text-align: left; }
 .session-list button { cursor: pointer; }
@@ -166,6 +167,7 @@ button { color: inherit; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .file-button:focus-within { outline: 2px solid var(--sage); outline-offset: 3px; }
 .file-button input { width: 1px; height: 1px; }
 @media (max-width: 1100px) { .session-library { grid-template-columns: 190px minmax(0, 1fr); } .library-start { grid-template-columns: 1fr; gap: 18px; } }
+@media (max-width: 1200px) { .library-columns { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 760px) { .session-library { grid-template-columns: 1fr; } .library-nav { padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--line); } .library-nav nav { display: flex; } .library-nav nav button { flex: 1; gap: 8px; padding: 10px; font-size: 11px; } .nav-caption, .nav-note { display: none; } .library-content { padding: 24px; } .library-welcome { padding: 32px 0; } .library-welcome h1 { font-size: 38px; } .illustration-sheet { width: 155px; height: 205px; padding: 24px 18px; } .illustration-note { right: -8px; font-size: 10px; } .library-columns { grid-template-columns: 1fr; } }
 @media (max-width: 520px) { .library-welcome { grid-template-columns: 1fr; } .library-illustration { display: none; } .library-start { padding: 20px; } .session-form-controls { flex-direction: column; } .library-collection-heading { align-items: stretch; flex-direction: column; } .library-search input { width: 100%; } .library-footer { flex-direction: column; } .workspace-label { display: none; } }
 
@@ -526,3 +528,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .login-card button[type="submit"]:disabled { opacity: 0.6; cursor: progress; }
 .login-alternate { align-self: flex-start; border: 0; background: transparent; color: var(--sage); cursor: pointer; font-size: 13px; padding: 0; text-decoration: underline; }
 .login-error { margin: 0; color: #a5372c; font-size: 13px; }
+
+/* O marcador é uma escolha manual e permanece separado do progresso de leitura. */
+.app-shell--reading .bookmark-controls { display: flex; align-items: center; gap: 3px; padding-left: 8px; border-left: 1px solid #cbd1d9; white-space: nowrap; }
+.app-shell--reading .bookmark-controls button { min-height: 30px; border: 0; border-radius: 4px; padding: 5px 8px; background: transparent; color: #354657; font-size: 11px; cursor: pointer; }
+.app-shell--reading .bookmark-controls button:hover:not(:disabled) { background: #e2e8ef; }
+.app-shell--reading .bookmark-controls button:disabled { opacity: .5; cursor: default; }
+.app-shell--reading .bookmark-controls .bookmark-go { background: #e6efe8; color: #315840; }
+.app-shell--reading .bookmark-controls .bookmark-go:disabled { opacity: 1; }
+.app-shell--reading .bookmark-controls .bookmark-go::before { content: ""; display: inline-block; width: 9px; height: 12px; margin-right: 5px; background: #4c7659; vertical-align: -2px; clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%); }
+.app-shell--reading .bookmark-controls .bookmark-remove { padding: 4px 7px; font-size: 17px; }
+@media (max-width: 620px) {
+  .app-shell--reading .reader-toolbar { justify-content: flex-start; gap: 3px 8px; padding-right: 75px; }
+  .app-shell--reading .bookmark-controls { order: 3; flex-basis: 100%; padding-left: 0; border-left: 0; }
+  .app-shell--reading .sidebar-toggle { top: 5px; }
+}

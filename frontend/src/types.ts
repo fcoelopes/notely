@@ -79,6 +79,13 @@ export interface DocumentRecord {
   storage_uri: string;
 }
 
+export interface DocumentBookmark {
+  document_id: string;
+  page_number: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface DocumentSummary extends DocumentRecord {
   mime_type: string;
   created_at: string;

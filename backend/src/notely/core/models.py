@@ -114,6 +114,20 @@ class Document:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentBookmark:
+    """Página escolhida pelo usuário para retomar um documento."""
+
+    document_id: UUID
+    page_number: int
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if self.page_number < 1:
+            raise ValueError("bookmark page must be at least 1")
+
+
+@dataclass(frozen=True, slots=True)
 class Annotation:
     document_id: UUID
     page_number: int

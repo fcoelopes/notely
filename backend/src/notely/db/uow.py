@@ -22,6 +22,7 @@ from notely.core.models import (
     AnnotationType,
     AuthorType,
     Document,
+    DocumentBookmark,
     OutboxEvent,
     StudySession,
     StudySessionDocument,
@@ -42,6 +43,7 @@ from notely.db.models import (
     DocumentCorpusChunkRow,
     DocumentCorpusIndexRow,
     DocumentRow,
+    DocumentBookmarkRow,
     OutboxEventRow,
     ReadingSessionRow,
     StudySessionDocumentRow,
@@ -122,6 +124,45 @@ class SqlAlchemyUnitOfWork:
                 storage_uri=document.storage_uri,
                 created_at=document.created_at,
                 updated_at=document.updated_at,
+            )
+        )
+
+    async def list_document_bookmarks(self) -> list[DocumentBookmark]:
+        rows = (await self._active_session().scalars(
+            select(DocumentBookmarkRow)
+            .join(DocumentRow, DocumentRow.id == DocumentBookmarkRow.document_id)
+            .where(
+                DocumentBookmarkRow.user_id == self._user_id,
+                DocumentRow.user_id == self._user_id,
+                DocumentBookmarkRow.page_number <= DocumentRow.page_count,
+            )
+            .order_by(DocumentBookmarkRow.document_id)
+        )).all()
+        return [_to_document_bookmark(row) for row in rows]
+
+    async def save_document_bookmark(self, bookmark: DocumentBookmark) -> DocumentBookmark:
+        row = (await self._active_session().scalars(
+            insert(DocumentBookmarkRow).values(
+                user_id=self._user_id,
+                document_id=bookmark.document_id,
+                page_number=bookmark.page_number,
+                created_at=bookmark.created_at,
+                updated_at=bookmark.updated_at,
+            ).on_conflict_do_update(
+                index_elements=[DocumentBookmarkRow.user_id, DocumentBookmarkRow.document_id],
+                set_={
+                    "page_number": bookmark.page_number,
+                    "updated_at": bookmark.updated_at,
+                },
+            ).returning(DocumentBookmarkRow)
+        )).one()
+        return _to_document_bookmark(row)
+
+    async def delete_document_bookmark(self, document_id: UUID) -> None:
+        await self._active_session().execute(
+            delete(DocumentBookmarkRow).where(
+                DocumentBookmarkRow.user_id == self._user_id,
+                DocumentBookmarkRow.document_id == document_id,
             )
         )
 
@@ -586,6 +627,15 @@ def _study_session_row(session: StudySession, *, user_id: UUID) -> StudySessionR
         theme_updated_at=session.theme_updated_at,
         created_at=session.created_at,
         updated_at=session.updated_at,
+    )
+
+
+def _to_document_bookmark(row: DocumentBookmarkRow) -> DocumentBookmark:
+    return DocumentBookmark(
+        document_id=row.document_id,
+        page_number=row.page_number,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
     )
 
 

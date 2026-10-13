@@ -14,6 +14,7 @@ import {
   attachDocumentToSession,
   createAnnotation,
   createStudySession,
+  deleteDocumentBookmark,
   currentAccount,
   detachDocumentFromSession,
   documentContentUrl,
@@ -21,12 +22,14 @@ import {
   getReadingProgress,
   listAnnotations,
   listDocuments,
+  listDocumentBookmarks,
   listStudySessions,
   logout,
   recordViewedPage,
   rejectThemeSuggestion,
   requestThemeSuggestion,
   setStudySessionTheme,
+  setDocumentBookmark,
   setUnauthorizedHandler,
   uploadDocument,
 } from "./lib/api";
@@ -38,6 +41,7 @@ import type {
   Annotation,
   AnnotationType,
   DocumentSummary,
+  DocumentBookmark,
   ReadingProgressSnapshot,
   SelectionDraft,
   StudySession,
@@ -53,6 +57,8 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [sessions, setSessions] = useState<StudySession[]>([]);
   const [progress, setProgress] = useState<ReadingProgressSnapshot | null>(null);
+  const [bookmarksByDocument, setBookmarksByDocument] = useState<Record<string, DocumentBookmark>>({});
+  const [bookmarkBusy, setBookmarkBusy] = useState(false);
   const [session, setSession] = useState<StudySessionDetail | null>(null);
   const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null);
   const [localUrls, setLocalUrls] = useState<Record<string, string>>({});
@@ -150,6 +156,7 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
   // é o id do link e não bate com as chaves gravadas pelos handlers de navegação.
   const pageNumber = activeDocumentId ? pageByDocument[activeDocumentId] ?? 1 : 1;
   const numPages = activeDocument?.page_count ?? 0;
+  const activeBookmark = activeDocumentId ? bookmarksByDocument[activeDocumentId] : undefined;
 
   useEffect(() => {
     setSelection(null);
@@ -204,7 +211,16 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
       setBusy(true);
       setError(null);
       try {
-        const detail = await getStudySession(sessionId);
+        const [detail, bookmarks] = await Promise.all([
+          getStudySession(sessionId), listDocumentBookmarks().catch(() => null),
+        ]);
+        const savedBookmarks = bookmarks
+          ? Object.fromEntries(bookmarks.map((bookmark) => [bookmark.document_id, bookmark]))
+          : bookmarksByDocument;
+        if (bookmarks) setBookmarksByDocument(savedBookmarks);
+        setPageByDocument(Object.fromEntries(detail.documents.map((document) => [
+          document.document_id, savedBookmarks[document.document_id]?.page_number ?? 1,
+        ])));
         setSession(detail);
         void refreshProgress();
         const first = detail.documents[0]?.document_id ?? null;
@@ -216,7 +232,7 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
         setBusy(false);
       }
     },
-    [loadAnnotations, refreshProgress],
+    [bookmarksByDocument, loadAnnotations, refreshProgress],
   );
 
   const handlePageRendered = useCallback((sessionId: string, documentId: string, viewedPage: number) => {
@@ -257,6 +273,39 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
     [loadAnnotations, reading],
   );
 
+  const handleSetBookmark = useCallback(async () => {
+    if (!activeDocumentId) return;
+    setBookmarkBusy(true);
+    setError(null);
+    try {
+      const saved = await setDocumentBookmark(activeDocumentId, pageNumber);
+      setBookmarksByDocument((current) => ({ ...current, [saved.document_id]: saved }));
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBookmarkBusy(false);
+    }
+  }, [activeDocumentId, pageNumber]);
+
+  const handleDeleteBookmark = useCallback(async () => {
+    if (!activeDocumentId) return;
+    const documentId = activeDocumentId;
+    setBookmarkBusy(true);
+    setError(null);
+    try {
+      await deleteDocumentBookmark(documentId);
+      setBookmarksByDocument((current) => {
+        const next = { ...current };
+        delete next[documentId];
+        return next;
+      });
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBookmarkBusy(false);
+    }
+  }, [activeDocumentId]);
+
   const storeLocalUrl = useCallback((documentId: string, file: File) => {
     const url = URL.createObjectURL(file);
     localUrlsRef.current = { ...localUrlsRef.current, [documentId]: url };
@@ -273,6 +322,9 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
           const pageCount = await readPageCount(file);
           const record = await uploadDocument(file, pageCount);
           await attachDocumentToSession(session.id, record.id);
+          setPageByDocument((current) => ({
+            ...current, [record.id]: bookmarksByDocument[record.id]?.page_number ?? 1,
+          }));
           storeLocalUrl(record.id, file);
         }
         const detail = await refreshSession(session.id);
@@ -283,7 +335,7 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
         setBusy(false);
       }
     },
-    [refreshSession, session, storeLocalUrl],
+    [bookmarksByDocument, refreshSession, session, storeLocalUrl],
   );
 
   const handleStartSession = useCallback(
@@ -310,6 +362,9 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
       try {
         await attachDocumentToSession(session.id, documentId);
         await refreshSession(session.id);
+        setPageByDocument((current) => ({
+          ...current, [documentId]: bookmarksByDocument[documentId]?.page_number ?? 1,
+        }));
         selectDocument(documentId);
       } catch (caught) {
         setError(describeError(caught));
@@ -317,7 +372,7 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
         setBusy(false);
       }
     },
-    [refreshSession, selectDocument, session],
+    [bookmarksByDocument, refreshSession, selectDocument, session],
   );
 
   const handleRemoveDocument = useCallback(
@@ -636,6 +691,43 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
               >
                 →
               </button>
+            </div>
+            <div className="bookmark-controls" aria-label="Marcador de página">
+              <button
+                aria-label={activeBookmark ? "Mover marcador para a página atual" : "Marcar página atual"}
+                disabled={!activeDocument || bookmarkBusy || activeBookmark?.page_number === pageNumber}
+                onClick={() => void handleSetBookmark()}
+                title="Marcar a página atual para retomar a leitura"
+                type="button"
+              >
+                Marcar
+              </button>
+              {activeBookmark && (
+                <>
+                  <button
+                    aria-label={`Ir para a página marcada ${activeBookmark.page_number}`}
+                    className="bookmark-go"
+                    disabled={bookmarkBusy || activeBookmark.page_number === pageNumber}
+                    onClick={() => {
+                      if (!activeDocumentId) return;
+                      setPageByDocument((current) => ({ ...current, [activeDocumentId]: activeBookmark.page_number }));
+                      reading.noteActivity(activeBookmark.page_number);
+                    }}
+                    title={`Ir para a página marcada ${activeBookmark.page_number}`}
+                    type="button"
+                  >
+                    Marcador · pág. {activeBookmark.page_number}
+                  </button>
+                  <button
+                    aria-label="Remover marcador"
+                    className="bookmark-remove"
+                    disabled={bookmarkBusy}
+                    onClick={() => void handleDeleteBookmark()}
+                    title="Remover marcador"
+                    type="button"
+                  >×</button>
+                </>
+              )}
             </div>
               <div className="zoom-controls" aria-label="Zoom">
               <button aria-label="Diminuir zoom" disabled={scale <= 0.5} onClick={() => setScale((value) => Math.max(0.5, Number((value - 0.1).toFixed(1))))}>−</button>

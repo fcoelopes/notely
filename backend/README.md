@@ -12,7 +12,7 @@ Na raiz do repositório:
 ./scripts/dev.sh
 ```
 
-O comando sobe PostgreSQL, MinIO e ClamAV, sincroniza as dependências, aplica as revisões pendentes com Alembic e inicia API, Reader e os três workers (TimescaleDB, corpus e curadoria). Use `Ctrl+C` para encerrar os processos da aplicação; os contêineres continuam ativos. Se a API ou o Reader já ocupam as portas locais, encerre a instância anterior antes de iniciar outra.
+O comando sobe PostgreSQL, MinIO e ClamAV, sincroniza as dependências, aplica as revisões pendentes com Alembic e inicia API, Reader e os cinco workers (TimescaleDB, corpus, curadoria, grafo e conceitos). Use `Ctrl+C` para encerrar os processos da aplicação; os contêineres continuam ativos. Se a API ou o Reader já ocupam as portas locais, encerre a instância anterior antes de iniciar outra.
 
 Para aplicar migrations sem iniciar outra instância da aplicação:
 
@@ -20,7 +20,7 @@ Para aplicar migrations sem iniciar outra instância da aplicação:
 ./scripts/dev.sh --migrate-only
 ```
 
-O PostgreSQL do ambiente local é a imagem `timescale/timescaledb` com `shared_preload_libraries=timescaledb`: a trilha temporal de leitura vive em TimescaleDB, e a migration falha de forma explícita se a extensão não estiver disponível.
+O PostgreSQL do ambiente local é construído de [`infra/db/Dockerfile`](../infra/db/Dockerfile) como `notely-postgres:age-1.7.0-pg17`, com TimescaleDB e Apache AGE carregados em `shared_preload_libraries`: a trilha temporal de leitura vive em TimescaleDB e o grafo em AGE, e as migrations falham de forma explícita se as extensões não estiverem disponíveis. O primeiro build dessa imagem compila o AGE e pode demorar.
 
 ### Atualizar um banco local existente
 
@@ -40,7 +40,15 @@ Sem a migration `0006`, a API falha ao salvar destaques e dúvidas porque falta 
 
 O primeiro build do MinIO compila a release fixada em [`infra/minio/Dockerfile`](../infra/minio/Dockerfile) e pode demorar. A console local fica em `http://localhost:9001`.
 
-Configurações e credenciais de desenvolvimento estão em [`.env.example`](.env.example). Não as reutilize em produção.
+Configurações e credenciais de desenvolvimento estão em [`.env.example`](../.env.example), na raiz do repositório. Copie com `cp .env.example .env` e não reutilize esses valores em produção.
+
+Duas variáveis são obrigatórias para cifrar segredos em repouso: `NOTELY_AUTH_SECRET_KEY`, que protege o segredo do segundo fator, e `NOTELY_AI_SECRET_KEY`, que protege a chave de modelo do usuário. Sem elas a aplicação sobe e funciona normalmente, mas ativar o segundo fator e salvar a chave de modelo respondem `503` (`AuthConfigurationError` e `AssistantConfigurationError`) em vez de gravar o segredo em claro. Cada uma precisa de uma chave Fernet distinta, base64 urlsafe de 32 bytes. Gere cada uma uma vez e guarde o valor no `.env`:
+
+```bash
+backend/.venv/bin/python -c "from notely.core.security import SecretCipher; print(SecretCipher.generate_key())"
+```
+
+A API lê o `.env` do diretório em que é iniciada, e o `./scripts/dev.sh` inicia a partir da raiz: um `.env` dentro de `backend/` seria ignorado ao usar o script. Trocar uma dessas chaves torna ilegíveis os segredos já gravados com ela, e o segundo fator ou a chave de modelo precisam ser cadastrados de novo.
 
 ## Fluxo de upload
 
@@ -217,12 +225,8 @@ Sem `--password`, o comando gera uma senha e a exibe uma única vez. O `bootstra
 dono provisório criado pela migration, então o acervo existente continua da mesma pessoa.
 
 O segundo fator é TOTP (aplicativo autenticador) e ativar exige a chave de cifra do
-segredo:
-
-```bash
-export NOTELY_AUTH_SECRET_KEY="$(backend/.venv/bin/python -c \
-  'from notely.core.security import SecretCipher; print(SecretCipher.generate_key())')"
-```
+segredo, `NOTELY_AUTH_SECRET_KEY`, configurada no `.env`. Gere o valor uma única vez e
+guarde-o: uma chave nova a cada sessão tornaria ilegível o segredo já gravado.
 
 Fluxo HTTP: `POST /api/auth/login` e, com segundo fator ativo, `POST /api/auth/mfa` ou
 `POST /api/auth/recovery`; `GET /api/auth/me`; `POST /api/auth/logout`;
@@ -233,12 +237,8 @@ Cada registro tem dono, aplicado pelo escopo da unidade de trabalho. Ver
 ## Assistente de estudo com o modelo do usuário (issue #8)
 
 O assistente usa a chave do próprio usuário (BYOK) e responde ancorado no corpus da
-sessão e nas anotações dele. A chave é cifrada em repouso e nunca é devolvida pela API.
-
-```bash
-export NOTELY_AI_SECRET_KEY="$(backend/.venv/bin/python -c \
-  'from notely.core.security import SecretCipher; print(SecretCipher.generate_key())')"
-```
+sessão e nas anotações dele. A chave é cifrada em repouso com `NOTELY_AI_SECRET_KEY`,
+definida no `.env`, e nunca é devolvida pela API.
 
 ```text
 GET    /api/ai-config              consulta a configuração (informa has_key, nunca a chave)

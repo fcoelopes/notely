@@ -20,7 +20,7 @@ Para aplicar migrations sem iniciar outra instância da aplicação:
 ./scripts/dev.sh --migrate-only
 ```
 
-O PostgreSQL do ambiente local é construído de [`infra/db/Dockerfile`](../infra/db/Dockerfile) como `notely-postgres:age-1.7.0-pg17`, com TimescaleDB e Apache AGE carregados em `shared_preload_libraries`: a trilha temporal de leitura vive em TimescaleDB e o grafo em AGE, e as migrations falham de forma explícita se as extensões não estiverem disponíveis. O primeiro build dessa imagem compila o AGE e pode demorar.
+O PostgreSQL do ambiente local é construído de [`infra/db/Dockerfile`](../infra/db/Dockerfile) como `notely-postgres:age-1.7.0-pg17`, com TimescaleDB e Apache AGE carregados em `shared_preload_libraries`: a trilha temporal de leitura vive em TimescaleDB e o grafo em AGE, e as migrations falham de forma explícita se as extensões não estiverem disponíveis. O primeiro build dessa imagem compila o AGE e pode demorar. Quando alguma imagem do projeto precisa ser construída, o Compose anuncia `Building` para todas as que têm seção `build`, inclusive a do Postgres; se a imagem do AGE já existe, ela é reaproveitada sem alteração e as execuções seguintes não anunciam nada.
 
 ### Atualizar um banco local existente
 

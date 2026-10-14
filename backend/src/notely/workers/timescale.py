@@ -189,7 +189,9 @@ async def run_forever(
 ) -> None:
     while True:
         stats = await run_batch(store=store, sessions=sessions, batch_size=batch_size)
-        if stats["claimed"] == 0:
+        if stats["claimed"]:
+            logger.info("batch processed %s", stats)
+        else:
             await asyncio.sleep(interval_seconds)
 
 

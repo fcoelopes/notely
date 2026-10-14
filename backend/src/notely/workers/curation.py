@@ -202,7 +202,9 @@ def main() -> None:
                 stats = await run_batch(
                     store=store, sessions=sessions, batch_size=args.batch_size
                 )
-                logger.info("batch processed %s", stats)
+                # Sem trabalho não há o que relatar; `--once` relata o lote pedido.
+                if stats["claimed"] or args.once:
+                    logger.info("batch processed %s", stats)
                 if args.once:
                     break
                 if stats["claimed"] == 0:

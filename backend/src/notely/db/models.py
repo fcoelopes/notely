@@ -4,8 +4,10 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    Boolean,
     Computed,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     SmallInteger,
@@ -21,7 +23,19 @@ class Base(DeclarativeBase):
     pass
 
 
-class DocumentRow(Base):
+class OwnedRow:
+    """Registro com dono.
+
+    O valor vem do escopo da unidade de trabalho. Tabelas puramente derivadas não usam
+    este mixin: o dono delas é resolvido pelo registro de origem (ver migration 0011).
+    """
+
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+
+
+class DocumentRow(OwnedRow, Base):
     __tablename__ = "documents"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -31,6 +45,20 @@ class DocumentRow(Base):
     mime_type: Mapped[str] = mapped_column(Text, nullable=False)
     page_count: Mapped[int] = mapped_column(Integer, nullable=False)
     storage_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DocumentBookmarkRow(OwnedRow, Base):
+    __tablename__ = "document_bookmarks"
+
+    document_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -79,7 +107,7 @@ class DocumentCorpusChunkRow(Base):
     )
 
 
-class AnnotationRow(Base):
+class AnnotationRow(OwnedRow, Base):
     __tablename__ = "annotations"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -106,7 +134,7 @@ class AnnotationRow(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class ReadingSessionRow(Base):
+class ReadingSessionRow(OwnedRow, Base):
     __tablename__ = "reading_sessions"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -142,7 +170,7 @@ class ReaderEventRow(Base):
     metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
 
 
-class StudySessionRow(Base):
+class StudySessionRow(OwnedRow, Base):
     __tablename__ = "study_sessions"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -153,7 +181,7 @@ class StudySessionRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class StudySessionDocumentRow(Base):
+class StudySessionDocumentRow(OwnedRow, Base):
     __tablename__ = "study_session_documents"
     __table_args__ = (UniqueConstraint("study_session_id", "document_id"),)
 
@@ -168,7 +196,22 @@ class StudySessionDocumentRow(Base):
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class AISuggestionRow(Base):
+class StudySessionViewedPageRow(OwnedRow, Base):
+    __tablename__ = "study_session_viewed_pages"
+
+    study_session_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("study_sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    document_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    page_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    first_viewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AISuggestionRow(OwnedRow, Base):
     __tablename__ = "ai_suggestions"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -184,7 +227,7 @@ class AISuggestionRow(Base):
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class CurationRequestRow(Base):
+class CurationRequestRow(OwnedRow, Base):
     __tablename__ = "question_curation_requests"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -203,7 +246,7 @@ class CurationRequestRow(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class CuratedSourceRow(Base):
+class CuratedSourceRow(OwnedRow, Base):
     __tablename__ = "question_curated_sources"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -227,7 +270,7 @@ class CuratedSourceRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class OutboxEventRow(Base):
+class OutboxEventRow(OwnedRow, Base):
     __tablename__ = "outbox_events"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -247,7 +290,131 @@ class OutboxEventRow(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Estado mantido apenas para o histórico anterior ao fan-out. A decisão de entrega
+    # vive em outbox_deliveries; estas colunas não são lidas nem escritas.
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class OutboxDeliveryRow(Base):
+    """Entrega de um evento a um consumidor.
+
+    Mais de um worker projeta o mesmo evento; o retry e o backoff de um consumidor não
+    interferem no outro. Ver ``docs/adr/0004``.
+    """
+
+    __tablename__ = "outbox_deliveries"
+
+    event_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("outbox_events.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    consumer: Mapped[str] = mapped_column(Text, primary_key=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class ConceptRow(OwnedRow, Base):
+    __tablename__ = "concepts"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AnnotationConceptRow(Base):
+    """Relação anotação → conceito, sempre com proveniência e status explícitos."""
+
+    __tablename__ = "annotation_concepts"
+    __table_args__ = (UniqueConstraint("annotation_id", "concept_id", "relation"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    annotation_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("annotations.id", ondelete="CASCADE"), nullable=False
+    )
+    concept_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("concepts.id", ondelete="CASCADE"), nullable=False
+    )
+    relation: Mapped[str] = mapped_column(Text, nullable=False)
+    provenance: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class UserRow(Base):
+    __tablename__ = "users"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    password_hash: Mapped[str | None] = mapped_column(Text)
+    totp_secret_encrypted: Mapped[str | None] = mapped_column(Text)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthSessionRow(Base):
+    """Sessão opaca; o token em claro nunca é persistido."""
+
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    stage: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RecoveryCodeRow(Base):
+    __tablename__ = "recovery_codes"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class LoginAttemptRow(Base):
+    """Registro de tentativa de login, usado para bloquear força bruta."""
+
+    __tablename__ = "login_attempts"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    normalized_email: Mapped[str] = mapped_column(Text, nullable=False)
+    succeeded: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AIModelConfigRow(OwnedRow, Base):
+    """Configuração BYOK do usuário. A chave é persistida já cifrada."""
+
+    __tablename__ = "ai_model_configs"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text)
+    base_url: Mapped[str | None] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

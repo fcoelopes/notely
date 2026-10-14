@@ -28,10 +28,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from notely.core.models import AnnotationType
 from notely.core.services import NotelyService
-from notely.db.models import OutboxEventRow, ReaderEventRow
-from notely.db.outbox import SqlAlchemyOutboxStore
+from notely.db.models import OutboxDeliveryRow, ReaderEventRow
+from notely.db.outbox import CONSUMER_TIMESCALE, SqlAlchemyOutboxStore
 from notely.db.uow import SqlAlchemyUnitOfWork
 from notely.workers.timescale import run_batch
+from auth_helpers import TEST_USER_ID, ensure_test_user
+from auth_helpers import TEST_USER_ID
 
 TEST_DATABASE_URL = os.environ.get(
     "NOTELY_TEST_DATABASE_URL",
@@ -46,7 +48,7 @@ class IntegrationContext:
         self.engine = engine
         self.sessions = async_sessionmaker(engine, expire_on_commit=False)
         self.store = SqlAlchemyOutboxStore(self.sessions)
-        self.service = NotelyService(lambda: SqlAlchemyUnitOfWork(self.sessions))
+        self.service = NotelyService(lambda: SqlAlchemyUnitOfWork(self.sessions, user_id=TEST_USER_ID))
 
 
 @pytest.fixture
@@ -63,6 +65,7 @@ async def context() -> AsyncIterator[IntegrationContext]:
         await engine.dispose()
         pytest.skip(f"TimescaleDB integration database is unavailable: {exc}")
 
+    await ensure_test_user(context.sessions)
     yield context
     await engine.dispose()
 
@@ -132,7 +135,8 @@ async def test_outbox_reaches_the_timeline_and_survives_a_retry(
     async with context.sessions() as db:
         await db.execute(
             text(
-                "update outbox_events set processed_at = null, claimed_at = null, attempt_count = 0"
+                "update outbox_deliveries set processed_at = null, claimed_at = null, "
+                "attempt_count = 0 where consumer = 'timescale'"
             )
         )
         await db.commit()
@@ -233,15 +237,17 @@ async def test_failed_projection_is_recorded_and_retried_later(
             text(
                 """
                 insert into outbox_events (
-                    id, aggregate_type, aggregate_id, event_type, payload, created_at, available_at
+                    id, user_id, aggregate_type, aggregate_id, event_type, payload,
+                    created_at, available_at
                 ) values (
-                    :id, 'reading_session', :aggregate_id, 'reading.started', cast(:payload as jsonb),
-                    :now, :now
+                    :id, :user, 'reading_session', :aggregate_id, 'reading.started',
+                    cast(:payload as jsonb), :now, :now
                 )
                 """
             ),
             {
                 "id": broken_event_id,
+                "user": TEST_USER_ID,
                 "aggregate_id": document_id,
                 "payload": '{"document_id": "not-a-uuid"}',
                 "now": datetime.now(UTC),
@@ -254,14 +260,16 @@ async def test_failed_projection_is_recorded_and_retried_later(
     assert stats["projected"] == 0
 
     async with context.sessions() as db:
-        row = await db.get(OutboxEventRow, broken_event_id)
-        assert row is not None
-        assert row.processed_at is None
-        assert row.attempt_count == 1
-        assert row.last_error is not None
-        assert row.available_at > datetime.now(UTC) + timedelta(seconds=1)
+        delivery = await db.get(OutboxDeliveryRow, (broken_event_id, CONSUMER_TIMESCALE))
+        assert delivery is not None
+        assert delivery.processed_at is None
+        assert delivery.attempt_count == 1
+        assert delivery.last_error is not None
+        assert delivery.available_at > datetime.now(UTC) + timedelta(seconds=1)
 
-        claimed = await context.store.claim(session=db, batch_size=50)
+        claimed = await context.store.claim(
+            session=db, consumer=CONSUMER_TIMESCALE, batch_size=50
+        )
         assert broken_event_id not in [event.id for event in claimed]
         await db.rollback()
 
@@ -282,10 +290,8 @@ async def test_events_outside_the_reading_trail_are_not_claimed(
     assert await _timeline(context, document_id=document_id) == []
 
     async with context.sessions() as db:
-        pending = await db.scalar(
-            text(
-                "select count(*) from outbox_events "
-                "where processed_at is null and last_error is null"
-            )
+        # Nenhuma entrega para timescale: o evento segue disponível para corpus e graph.
+        deliveries = await db.scalar(
+            text("select count(*) from outbox_deliveries where consumer = 'timescale'")
         )
-    assert pending == 1
+    assert deliveries == 0

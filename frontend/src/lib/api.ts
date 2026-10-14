@@ -1,18 +1,37 @@
 import type {
+  Account,
   Annotation,
   AnnotationPosition,
   AnnotationType,
   DocumentRecord,
+  DocumentBookmark,
   DocumentSummary,
+  Enrollment,
   ReadingSession,
+  ReadingProgressSnapshot,
+  ReadingProgressUpdate,
   QuestionSources,
   SessionDocument,
+  SessionOutcome,
   StudySession,
   StudySessionDetail,
   ThemeSuggestion,
 } from "../types";
 
 const API_ROOT = import.meta.env.VITE_API_ROOT ?? "";
+
+type UnauthorizedHandler = () => void;
+
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+/**
+ * Avisa a aplicação quando a sessão deixa de valer, para que ela volte ao login.
+ * Rotas de autenticação ficam de fora: nelas um 401 é credencial errada, não sessão
+ * expirada.
+ */
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler;
+}
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -33,8 +52,13 @@ function detailMessage(detail: unknown): string {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_ROOT}${path}`, {
     ...init,
+    // A sessão vai em cookie HttpOnly: sem isso o navegador não a envia.
+    credentials: "include",
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
+  if (response.status === 401 && !path.startsWith("/api/auth/")) {
+    unauthorizedHandler?.();
+  }
   return parseResponse<T>(response);
 }
 
@@ -54,8 +78,26 @@ export async function uploadDocument(file: File, pageCount: number): Promise<Doc
   const response = await fetch(`${API_ROOT}/api/documents/upload`, {
     method: "POST",
     body: form,
+    credentials: "include",
   });
   return parseResponse<DocumentRecord>(response);
+}
+
+export function listDocumentBookmarks(): Promise<DocumentBookmark[]> {
+  return request("/api/document-bookmarks");
+}
+
+export function setDocumentBookmark(
+  documentId: string, pageNumber: number,
+): Promise<DocumentBookmark> {
+  return request(`/api/documents/${documentId}/bookmark`, {
+    method: "PUT",
+    body: JSON.stringify({ page_number: pageNumber }),
+  });
+}
+
+export function deleteDocumentBookmark(documentId: string): Promise<void> {
+  return request(`/api/documents/${documentId}/bookmark`, { method: "DELETE" });
 }
 
 export function documentContentUrl(documentId: string): string {
@@ -193,4 +235,53 @@ export function retryQuestionSources(sessionId: string, annotationId: string): P
   return request(`/api/study-sessions/${sessionId}/questions/${annotationId}/sources/retry`, {
     method: "POST",
   });
+}
+
+export function getReadingProgress(): Promise<ReadingProgressSnapshot> {
+  return request("/api/reading-progress");
+}
+
+export function recordViewedPage(
+  sessionId: string, documentId: string, pageNumber: number,
+): Promise<ReadingProgressUpdate> {
+  return request(
+    `/api/study-sessions/${sessionId}/documents/${documentId}/viewed-pages/${pageNumber}`,
+    { method: "PUT" },
+  );
+}
+
+/** Sessão: a conta autenticada vem do cookie, nunca de estado no cliente. */
+export function currentAccount(): Promise<Account> {
+  return request("/api/auth/me");
+}
+
+export function login(email: string, password: string): Promise<SessionOutcome> {
+  return request("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export function submitMfaCode(code: string): Promise<SessionOutcome> {
+  return request("/api/auth/mfa", { method: "POST", body: JSON.stringify({ code }) });
+}
+
+export function submitRecoveryCode(code: string): Promise<SessionOutcome> {
+  return request("/api/auth/recovery", { method: "POST", body: JSON.stringify({ code }) });
+}
+
+export function logout(): Promise<void> {
+  return request("/api/auth/logout", { method: "POST" });
+}
+
+export function startMfaEnrollment(): Promise<Enrollment> {
+  return request("/api/auth/mfa/enroll", { method: "POST" });
+}
+
+export function confirmMfaEnrollment(code: string): Promise<{ recovery_codes: string[] }> {
+  return request("/api/auth/mfa/confirm", { method: "POST", body: JSON.stringify({ code }) });
+}
+
+export function disableMfa(password: string): Promise<void> {
+  return request("/api/auth/mfa/disable", { method: "POST", body: JSON.stringify({ password }) });
 }

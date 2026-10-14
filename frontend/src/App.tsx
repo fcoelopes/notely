@@ -4,6 +4,7 @@ import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import { AnnotationPanel } from "./components/AnnotationPanel";
 import { CommentComposer } from "./components/CommentComposer";
 import { DocumentTabs } from "./components/DocumentTabs";
+import { LoginScreen } from "./components/LoginScreen";
 import { SelectionToolbar } from "./components/SelectionToolbar";
 import { SessionLibrary } from "./components/SessionLibrary";
 import { SessionThemePanel } from "./components/SessionThemePanel";
@@ -13,24 +14,35 @@ import {
   attachDocumentToSession,
   createAnnotation,
   createStudySession,
+  deleteDocumentBookmark,
+  currentAccount,
   detachDocumentFromSession,
   documentContentUrl,
   getStudySession,
+  getReadingProgress,
   listAnnotations,
   listDocuments,
+  listDocumentBookmarks,
   listStudySessions,
+  logout,
+  recordViewedPage,
   rejectThemeSuggestion,
   requestThemeSuggestion,
   setStudySessionTheme,
+  setDocumentBookmark,
+  setUnauthorizedHandler,
   uploadDocument,
 } from "./lib/api";
 import { normalizeRects } from "./lib/geometry";
 import { readPageCount } from "./lib/pdf";
 import { useReadingSession } from "./lib/useReadingSession";
 import type {
+  Account,
   Annotation,
   AnnotationType,
   DocumentSummary,
+  DocumentBookmark,
+  ReadingProgressSnapshot,
   SelectionDraft,
   StudySession,
   StudySessionDetail,
@@ -41,9 +53,12 @@ const COMMENT_TYPES: AnnotationType[] = ["note", "question", "disagreement"];
 const API_UNAVAILABLE =
   "A API do Notely não está disponível. Confirme se os serviços estão em execução.";
 
-function App() {
+function Reader({ account, onSignOut }: { account: Account; onSignOut: () => void }) {
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [sessions, setSessions] = useState<StudySession[]>([]);
+  const [progress, setProgress] = useState<ReadingProgressSnapshot | null>(null);
+  const [bookmarksByDocument, setBookmarksByDocument] = useState<Record<string, DocumentBookmark>>({});
+  const [bookmarkBusy, setBookmarkBusy] = useState(false);
   const [session, setSession] = useState<StudySessionDetail | null>(null);
   const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null);
   const [localUrls, setLocalUrls] = useState<Record<string, string>>({});
@@ -62,19 +77,32 @@ function App() {
   const stageRef = useRef<HTMLDivElement>(null);
   const localUrlsRef = useRef<Record<string, string>>({});
   const loadedAnnotations = useRef<Set<string>>(new Set());
+  const pendingViewedPages = useRef<Set<string>>(new Set());
+  const progressRevision = useRef(0);
 
   const describeError = (caught: unknown): string =>
     caught instanceof ApiError ? caught.message : API_UNAVAILABLE;
+
+  const refreshProgress = useCallback(async () => {
+    const revision = progressRevision.current;
+    try {
+      const snapshot = await getReadingProgress();
+      if (revision === progressRevision.current) setProgress(snapshot);
+    } catch {
+      // Progresso é auxiliar: falhas não interrompem a leitura.
+    }
+  }, []);
 
   const refreshLibrary = useCallback(async () => {
     try {
       const [library, openSessions] = await Promise.all([listDocuments(), listStudySessions()]);
       setDocuments(library);
       setSessions(openSessions);
+      void refreshProgress();
     } catch (caught) {
       setError(describeError(caught));
     }
-  }, []);
+  }, [refreshProgress]);
 
   useEffect(() => {
     void refreshLibrary();
@@ -128,6 +156,7 @@ function App() {
   // é o id do link e não bate com as chaves gravadas pelos handlers de navegação.
   const pageNumber = activeDocumentId ? pageByDocument[activeDocumentId] ?? 1 : 1;
   const numPages = activeDocument?.page_count ?? 0;
+  const activeBookmark = activeDocumentId ? bookmarksByDocument[activeDocumentId] : undefined;
 
   useEffect(() => {
     setSelection(null);
@@ -173,16 +202,27 @@ function App() {
       detail,
       ...current.filter((item) => item.id !== detail.id),
     ]);
+    void refreshProgress();
     return detail;
-  }, []);
+  }, [refreshProgress]);
 
   const openSession = useCallback(
     async (sessionId: string) => {
       setBusy(true);
       setError(null);
       try {
-        const detail = await getStudySession(sessionId);
+        const [detail, bookmarks] = await Promise.all([
+          getStudySession(sessionId), listDocumentBookmarks().catch(() => null),
+        ]);
+        const savedBookmarks = bookmarks
+          ? Object.fromEntries(bookmarks.map((bookmark) => [bookmark.document_id, bookmark]))
+          : bookmarksByDocument;
+        if (bookmarks) setBookmarksByDocument(savedBookmarks);
+        setPageByDocument(Object.fromEntries(detail.documents.map((document) => [
+          document.document_id, savedBookmarks[document.document_id]?.page_number ?? 1,
+        ])));
         setSession(detail);
+        void refreshProgress();
         const first = detail.documents[0]?.document_id ?? null;
         setActiveDocumentId(first);
         if (first) await loadAnnotations(first);
@@ -192,8 +232,35 @@ function App() {
         setBusy(false);
       }
     },
-    [loadAnnotations],
+    [bookmarksByDocument, loadAnnotations, refreshProgress],
   );
+
+  const handlePageRendered = useCallback((sessionId: string, documentId: string, viewedPage: number) => {
+    const key = `${sessionId}:${documentId}:${viewedPage}`;
+    if (pendingViewedPages.current.has(key)) return;
+    pendingViewedPages.current.add(key);
+    void recordViewedPage(sessionId, documentId, viewedPage).then((update) => {
+      progressRevision.current += 1;
+      setProgress((current) => {
+        const previousSession = current?.sessions[update.study_session_id];
+        const previousDocument = current?.documents[update.document_id];
+        return {
+          documents: {
+            ...current?.documents,
+            [update.document_id]: previousDocument && previousDocument.viewed_pages > update.document_global.viewed_pages
+              ? previousDocument : update.document_global,
+          },
+          sessions: {
+            ...current?.sessions,
+            [update.study_session_id]: previousSession && previousSession.progress.viewed_pages > update.session.progress.viewed_pages
+              ? previousSession : update.session,
+          },
+        };
+      });
+    }).catch(() => {
+      pendingViewedPages.current.delete(key);
+    });
+  }, []);
 
   const selectDocument = useCallback(
     (documentId: string) => {
@@ -205,6 +272,39 @@ function App() {
     },
     [loadAnnotations, reading],
   );
+
+  const handleSetBookmark = useCallback(async () => {
+    if (!activeDocumentId) return;
+    setBookmarkBusy(true);
+    setError(null);
+    try {
+      const saved = await setDocumentBookmark(activeDocumentId, pageNumber);
+      setBookmarksByDocument((current) => ({ ...current, [saved.document_id]: saved }));
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBookmarkBusy(false);
+    }
+  }, [activeDocumentId, pageNumber]);
+
+  const handleDeleteBookmark = useCallback(async () => {
+    if (!activeDocumentId) return;
+    const documentId = activeDocumentId;
+    setBookmarkBusy(true);
+    setError(null);
+    try {
+      await deleteDocumentBookmark(documentId);
+      setBookmarksByDocument((current) => {
+        const next = { ...current };
+        delete next[documentId];
+        return next;
+      });
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setBookmarkBusy(false);
+    }
+  }, [activeDocumentId]);
 
   const storeLocalUrl = useCallback((documentId: string, file: File) => {
     const url = URL.createObjectURL(file);
@@ -222,6 +322,9 @@ function App() {
           const pageCount = await readPageCount(file);
           const record = await uploadDocument(file, pageCount);
           await attachDocumentToSession(session.id, record.id);
+          setPageByDocument((current) => ({
+            ...current, [record.id]: bookmarksByDocument[record.id]?.page_number ?? 1,
+          }));
           storeLocalUrl(record.id, file);
         }
         const detail = await refreshSession(session.id);
@@ -232,7 +335,7 @@ function App() {
         setBusy(false);
       }
     },
-    [refreshSession, session, storeLocalUrl],
+    [bookmarksByDocument, refreshSession, session, storeLocalUrl],
   );
 
   const handleStartSession = useCallback(
@@ -259,6 +362,9 @@ function App() {
       try {
         await attachDocumentToSession(session.id, documentId);
         await refreshSession(session.id);
+        setPageByDocument((current) => ({
+          ...current, [documentId]: bookmarksByDocument[documentId]?.page_number ?? 1,
+        }));
         selectDocument(documentId);
       } catch (caught) {
         setError(describeError(caught));
@@ -266,7 +372,7 @@ function App() {
         setBusy(false);
       }
     },
-    [refreshSession, selectDocument, session],
+    [bookmarksByDocument, refreshSession, selectDocument, session],
   );
 
   const handleRemoveDocument = useCallback(
@@ -459,7 +565,7 @@ function App() {
   if (!session) {
     return (
       <div className="app-shell">
-        <Header />
+        <Header account={account} onSignOut={onSignOut} />
         {error && <StatusBanner message={error} />}
         <SessionLibrary
           busy={busy}
@@ -467,6 +573,7 @@ function App() {
           onResumeSession={(sessionId) => void openSession(sessionId)}
           onStartSession={(theme) => void handleStartSession(theme)}
           sessions={sessions}
+          progress={progress}
         />
       </div>
     );
@@ -478,14 +585,12 @@ function App() {
 
   return (
     <div className="app-shell app-shell--reading">
-      <Header onClose={handleCloseSession}>
+      <Header onClose={handleCloseSession} account={account} onSignOut={onSignOut}>
         <div className="reader-header-content">
           <div className="session-heading">
             <span className="session-tag">Sessão de estudo</span>
             <strong>{session.theme ?? "Sem tema definido"}</strong>
-            <small>
-              {session.documents.length} documento{session.documents.length === 1 ? "" : "s"} na sessão
-            </small>
+            <small className="reading-progress">{progress ? `${progress.sessions[session.id]?.progress.percent ?? 0}% · ${progress.sessions[session.id]?.progress.viewed_pages ?? 0}/${progress.sessions[session.id]?.progress.total_pages ?? 0} páginas visualizadas` : "Progresso indisponível"}</small>
           </div>
 
           <div className="session-actions">
@@ -540,6 +645,7 @@ function App() {
         <DocumentTabs
           activeDocumentId={activeDocumentId}
           documents={session.documents}
+          progress={progress ? progress.sessions[session.id] ?? { progress: { viewed_pages: 0, total_pages: 0, percent: 0 }, documents: {} } : null}
           onClose={(documentId) => void handleRemoveDocument(documentId)}
           onSelect={selectDocument}
         />
@@ -586,6 +692,43 @@ function App() {
                 →
               </button>
             </div>
+            <div className="bookmark-controls" aria-label="Marcador de página">
+              <button
+                aria-label={activeBookmark ? "Mover marcador para a página atual" : "Marcar página atual"}
+                disabled={!activeDocument || bookmarkBusy || activeBookmark?.page_number === pageNumber}
+                onClick={() => void handleSetBookmark()}
+                title="Marcar a página atual para retomar a leitura"
+                type="button"
+              >
+                Marcar
+              </button>
+              {activeBookmark && (
+                <>
+                  <button
+                    aria-label={`Ir para a página marcada ${activeBookmark.page_number}`}
+                    className="bookmark-go"
+                    disabled={bookmarkBusy || activeBookmark.page_number === pageNumber}
+                    onClick={() => {
+                      if (!activeDocumentId) return;
+                      setPageByDocument((current) => ({ ...current, [activeDocumentId]: activeBookmark.page_number }));
+                      reading.noteActivity(activeBookmark.page_number);
+                    }}
+                    title={`Ir para a página marcada ${activeBookmark.page_number}`}
+                    type="button"
+                  >
+                    Marcador · pág. {activeBookmark.page_number}
+                  </button>
+                  <button
+                    aria-label="Remover marcador"
+                    className="bookmark-remove"
+                    disabled={bookmarkBusy}
+                    onClick={() => void handleDeleteBookmark()}
+                    title="Remover marcador"
+                    type="button"
+                  >×</button>
+                </>
+              )}
+            </div>
               <div className="zoom-controls" aria-label="Zoom">
               <button aria-label="Diminuir zoom" disabled={scale <= 0.5} onClick={() => setScale((value) => Math.max(0.5, Number((value - 0.1).toFixed(1))))}>−</button>
               <span>{Math.round(scale * 100)}%</span>
@@ -628,6 +771,7 @@ function App() {
                     error={<div className="document-loading" role="alert">Não foi possível exibir esta página.</div>}
                     onLoadError={() => setError("Não foi possível carregar esta página do PDF.")}
                     onRenderError={() => setError("Não foi possível renderizar esta página do PDF.")}
+                    onRenderSuccess={() => { if (activeDocumentId) handlePageRendered(session.id, activeDocumentId, pageNumber); }}
                   />
                   <AnnotationOverlay annotations={currentAnnotations} />
                   {selection && composing && (
@@ -683,7 +827,17 @@ function App() {
   );
 }
 
-function Header({ onClose, children }: { onClose?: () => void; children?: React.ReactNode }) {
+function Header({
+  onClose,
+  children,
+  account,
+  onSignOut,
+}: {
+  onClose?: () => void;
+  account: Account;
+  onSignOut: () => void;
+  children?: React.ReactNode;
+}) {
   return (
     <header className="site-header">
       <a className="brand" href="/" onClick={(event) => { if (onClose) { event.preventDefault(); onClose(); } }}>
@@ -691,9 +845,65 @@ function Header({ onClose, children }: { onClose?: () => void; children?: React.
         <span>notely</span>
       </a>
       {children ?? <p>Leia. Anote. Conecte.</p>}
-      {onClose && <button className="close-reader" onClick={onClose}>Fechar sessão</button>}
+      <div className="header-actions">
+        <span className="account-email" title={account.email}>{account.email}</span>
+        <button className="sign-out" onClick={onSignOut}>Sair</button>
+        {onClose && <button className="close-reader" onClick={onClose}>Fechar sessão</button>}
+      </div>
     </header>
   );
+}
+
+/**
+ * Porta da aplicação: sem sessão ativa o Reader não é montado. Uma resposta 401 de
+ * qualquer chamada derruba a sessão local, porque o cookie é a única fonte de verdade.
+ */
+function App() {
+  const [account, setAccount] = useState<Account | null>(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => setAccount(null));
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    currentAccount()
+      .then((found) => {
+        if (active) setAccount(found);
+      })
+      .catch(() => {
+        if (active) setAccount(null);
+      })
+      .finally(() => {
+        if (active) setChecking(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const signOut = useCallback(() => {
+    // A sessão local termina de imediato; revogar no servidor é melhor esforço e não
+    // pode impedir o usuário de sair.
+    setAccount(null);
+    void logout().catch(() => undefined);
+  }, []);
+
+  if (checking) {
+    return (
+      <main className="login">
+        <p className="login-hint">Carregando…</p>
+      </main>
+    );
+  }
+
+  if (account === null) {
+    return <LoginScreen onAuthenticated={setAccount} />;
+  }
+
+  return <Reader account={account} onSignOut={signOut} />;
 }
 
 function StatusBanner({ message }: { message: string }) {

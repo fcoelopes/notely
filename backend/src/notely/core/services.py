@@ -14,6 +14,7 @@ from notely.core.models import (
     CurationRequest,
     CurationStatus,
     Document,
+    DocumentBookmark,
     OutboxEvent,
     ReadingSession,
     StudySession,
@@ -24,6 +25,11 @@ from notely.core.models import (
 )
 from notely.core.curation import CurationView, CuratedSourceView
 from notely.core.passage import anchor_from_position, passage_id
+from notely.core.progress import (
+    ReadingProgressSnapshot,
+    ReadingProgressUpdate,
+    build_progress_snapshot,
+)
 from notely.core.ports import UnitOfWork
 from notely.providers.topic import TopicSuggestionContext, TopicSuggestionProvider
 
@@ -100,6 +106,36 @@ class NotelyService:
             if document is None:
                 raise DocumentNotFoundError(str(document_id))
             return document
+
+    async def list_document_bookmarks(self) -> list[DocumentBookmark]:
+        async with self._uow_factory() as uow:
+            return await uow.list_document_bookmarks()
+
+    async def set_document_bookmark(
+        self, *, document_id: UUID, page_number: int
+    ) -> DocumentBookmark:
+        async with self._uow_factory() as uow:
+            document = await uow.get_document(document_id)
+            if document is None:
+                raise DocumentNotFoundError(str(document_id))
+            if not 1 <= page_number <= document.page_count:
+                raise PageOutsideDocumentError(
+                    f"page {page_number} is outside document page count {document.page_count}"
+                )
+            now = utc_now()
+            saved = await uow.save_document_bookmark(DocumentBookmark(
+                document_id=document_id, page_number=page_number,
+                created_at=now, updated_at=now,
+            ))
+            await uow.commit()
+            return saved
+
+    async def delete_document_bookmark(self, document_id: UUID) -> None:
+        async with self._uow_factory() as uow:
+            if await uow.get_document(document_id) is None:
+                raise DocumentNotFoundError(str(document_id))
+            await uow.delete_document_bookmark(document_id)
+            await uow.commit()
 
     async def register_document(
         self,
@@ -376,6 +412,42 @@ class NotelyService:
             if await uow.get_document(document_id) is None:
                 raise DocumentNotFoundError(str(document_id))
             return await uow.list_annotations(document_id)
+
+    async def get_reading_progress(self) -> ReadingProgressSnapshot:
+        async with self._uow_factory() as uow:
+            sessions = await uow.list_study_sessions()
+            session_counts = await uow.list_session_document_page_counts()
+            document_counts = await uow.list_global_document_page_counts()
+        return build_progress_snapshot(
+            [session.id for session in sessions], session_counts, document_counts
+        )
+
+    async def record_viewed_page(
+        self, *, session_id: UUID, document_id: UUID, page_number: int
+    ) -> ReadingProgressUpdate:
+        async with self._uow_factory() as uow:
+            if await uow.get_study_session(session_id) is None:
+                raise StudySessionNotFoundError(str(session_id))
+            document = await uow.get_document(document_id)
+            if document is None:
+                raise DocumentNotFoundError(str(document_id))
+            if await uow.get_study_session_document(session_id, document_id) is None:
+                raise SessionDocumentNotFoundError("document is not in this study session")
+            if not 1 <= page_number <= document.page_count:
+                raise PageOutsideDocumentError(
+                    f"page {page_number} is outside document page count {document.page_count}"
+                )
+            await uow.add_viewed_page(session_id, document_id, page_number, utc_now())
+            await uow.commit()
+            session_counts = await uow.list_session_document_page_counts(session_id)
+            document_counts = await uow.list_global_document_page_counts(document_id)
+        snapshot = build_progress_snapshot([session_id], session_counts, document_counts)
+        return ReadingProgressUpdate(
+            study_session_id=session_id,
+            document_id=document_id,
+            session=snapshot.sessions[session_id],
+            document_global=snapshot.documents[document_id],
+        )
 
     async def create_study_session(self, *, theme: str | None = None) -> StudySession:
         clean_theme = theme.strip() if theme else None

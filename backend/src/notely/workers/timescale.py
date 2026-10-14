@@ -12,7 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from notely.db.models import AnnotationRow
-from notely.db.outbox import DEFAULT_BATCH_SIZE, ClaimedEvent, SqlAlchemyOutboxStore
+from notely.db.outbox import (
+    CONSUMER_TIMESCALE,
+    DEFAULT_BATCH_SIZE,
+    ClaimedEvent,
+    SqlAlchemyOutboxStore,
+)
 from notely.db.reader_events import ReaderEvent, insert_reader_events
 
 logger = logging.getLogger("notely.workers.timescale")
@@ -133,6 +138,7 @@ async def run_batch(
     async with sessions() as session:
         claimed = await store.claim(
             session=session,
+            consumer=CONSUMER_TIMESCALE,
             batch_size=batch_size,
             event_types=PROJECTED_EVENT_TYPES,
         )
@@ -158,13 +164,17 @@ async def run_batch(
                 # Falha de projeção não é sucesso: o evento fica pendente para retry com
                 # backoff, com o motivo registrado em last_error.
                 stats["failed"] += 1
-                await store.mark_failed(session=session, event_id=event.id, error=str(exc))
+                await store.mark_failed(
+                    session=session, event_id=event.id, consumer=CONSUMER_TIMESCALE, error=str(exc)
+                )
                 continue
             projected_ids.append(event.id)
 
         stats["projected"] = await insert_reader_events(session=session, events=reader_events)
         for event_id in projected_ids:
-            await store.mark_processed(session=session, event_id=event_id)
+            await store.mark_processed(
+                session=session, event_id=event_id, consumer=CONSUMER_TIMESCALE
+            )
 
         await session.commit()
     return stats

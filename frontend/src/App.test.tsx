@@ -22,24 +22,36 @@ interface CreateAnnotationInput {
   study_session_id: string | null;
 }
 
-const pdfDocument = vi.hoisted(() => ({ props: null as DocumentProps | null }));
+const pdfDocument = vi.hoisted(() => ({ props: null as DocumentProps | null, pageRendered: null as (() => void) | null }));
+const testAccount = { id: "user-1", email: "dono@exemplo.com", totp_enabled: false };
 const api = vi.hoisted(() => ({
   acceptThemeSuggestion: vi.fn(),
+  currentAccount: vi.fn(),
+  login: vi.fn(),
+  logout: vi.fn(),
+  setUnauthorizedHandler: vi.fn(),
+  submitMfaCode: vi.fn(),
+  submitRecoveryCode: vi.fn(),
   startReadingSession: vi.fn(),
   updateReadingSession: vi.fn(),
   attachDocumentToSession: vi.fn(),
   createAnnotation: vi.fn(),
   createStudySession: vi.fn(),
   detachDocumentFromSession: vi.fn(),
+  deleteDocumentBookmark: vi.fn(),
   getStudySession: vi.fn(),
+  getReadingProgress: vi.fn(),
+  recordViewedPage: vi.fn(),
   getQuestionSources: vi.fn(),
   retryQuestionSources: vi.fn(),
   listAnnotations: vi.fn(),
   listDocuments: vi.fn(),
+  listDocumentBookmarks: vi.fn(),
   listStudySessions: vi.fn(),
   rejectThemeSuggestion: vi.fn(),
   requestThemeSuggestion: vi.fn(),
   setStudySessionTheme: vi.fn(),
+  setDocumentBookmark: vi.fn(),
   uploadDocument: vi.fn(),
 }));
 const readPageCount = vi.hoisted(() => vi.fn());
@@ -60,11 +72,14 @@ vi.mock("react-pdf", async () => {
       }, [props.file]);
       return <div className="react-pdf__Document">{props.children}</div>;
     },
-    Page: (props: { pageNumber: number }) => (
+    Page: (props: { pageNumber: number; onRenderSuccess?: () => void }) => {
+      pdfDocument.pageRendered = props.onRenderSuccess ?? null;
+      return (
       <div className="react-pdf__Page" data-page-number={props.pageNumber}>
         <span>Trecho selecionável do documento</span>
       </div>
-    ),
+    );
+    },
   };
 });
 
@@ -198,9 +213,24 @@ describe("App", () => {
     Object.values(api).forEach((fn) => fn.mockReset());
     readPageCount.mockReset();
     pdfDocument.props = null;
+    pdfDocument.pageRendered = null;
 
+    api.currentAccount.mockResolvedValue(testAccount);
+    api.logout.mockResolvedValue(undefined);
     api.listDocuments.mockResolvedValue([]);
+    api.listDocumentBookmarks.mockResolvedValue([]);
+    api.deleteDocumentBookmark.mockResolvedValue(undefined);
+    api.setDocumentBookmark.mockImplementation((documentId: string, pageNumber: number) => Promise.resolve({
+      document_id: documentId, page_number: pageNumber,
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+    }));
     api.listStudySessions.mockResolvedValue([]);
+    api.getReadingProgress.mockResolvedValue({ documents: {}, sessions: {} });
+    api.recordViewedPage.mockImplementation((sessionId: string, documentId: string) => Promise.resolve({
+      study_session_id: sessionId, document_id: documentId,
+      session: { progress: { viewed_pages: 1, total_pages: 4, percent: 25 }, documents: { [documentId]: { viewed_pages: 1, total_pages: 4, percent: 25 } } },
+      document_global: { viewed_pages: 1, total_pages: 4, percent: 25 },
+    }));
     api.listAnnotations.mockResolvedValue([]);
     api.getQuestionSources.mockResolvedValue({
       annotation_id: "annotation-1", study_session_id: "session-1",
@@ -429,12 +459,32 @@ describe("App", () => {
 
     await waitFor(() => expect(api.attachDocumentToSession).toHaveBeenCalledTimes(2));
     const tabs = await screen.findAllByRole("tab");
-    expect(tabs.map((tab) => tab.textContent)).toEqual(["ifrs4 p.", "embeddings4 p."]);
+    await waitFor(() => expect(tabs.map((tab) => tab.textContent)).toEqual(["ifrs0%", "embeddings0%"]));
     expect(pdfDocument.props?.file).toBe("blob:notely/documento");
 
     fireEvent.click(tabs[1]);
     await waitFor(() => expect(api.listAnnotations).toHaveBeenCalledWith("embeddings.pdf"));
     expect(pdfDocument.props?.file).toBe("blob:notely/documento");
+  });
+
+  it("records a rendered page once and updates session and file progress", async () => {
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0)], openPanels: false });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Artigo0%" })).toBeInTheDocument());
+    await act(async () => { pdfDocument.pageRendered?.(); });
+    await waitFor(() => expect(api.recordViewedPage).toHaveBeenCalledWith("session-1", "doc-1", 1));
+    expect(screen.getByRole("tab", { name: "Artigo25%" })).toBeInTheDocument();
+    expect(screen.getByText("25% · 1/4 páginas visualizadas")).toBeInTheDocument();
+    await act(async () => { pdfDocument.pageRendered?.(); });
+    expect(api.recordViewedPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps reading available when progress registration fails", async () => {
+    api.recordViewedPage.mockRejectedValue(new Error("temporarily unavailable"));
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0)], openPanels: false });
+    await act(async () => { pdfDocument.pageRendered?.(); });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Artigo0%" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    expect(screen.getByLabelText("Ir para página")).toHaveValue(2);
   });
 
   it("opens a document already ingested through the library", async () => {
@@ -569,6 +619,61 @@ describe("App", () => {
     await waitFor(() =>
       expect(document.querySelector(".page-controls span")?.textContent).toBe("/ 3"),
     );
+  });
+
+  it("opens on the saved bookmark and changes it only when asked", async () => {
+    api.listDocumentBookmarks.mockResolvedValue([
+      { document_id: "doc-1", page_number: 3, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+      { document_id: "doc-2", page_number: 2, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" },
+    ]);
+    await startSession({ documents: [
+      sessionDocument("doc-1", "Artigo", 0, 5),
+      sessionDocument("doc-2", "Anexo", 1, 4),
+    ] });
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "3");
+    fireEvent.click(screen.getAllByRole("tab")[1]);
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
+    fireEvent.click(screen.getAllByRole("tab")[0]);
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "3");
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "4");
+    expect(api.setDocumentBookmark).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Mover marcador para a página atual" }));
+    await waitFor(() => expect(api.setDocumentBookmark).toHaveBeenCalledWith("doc-1", 4));
+    expect(await screen.findByRole("button", { name: "Ir para a página marcada 4" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Página anterior" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ir para a página marcada 4" }));
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "4");
+    fireEvent.click(screen.getByRole("button", { name: "Remover marcador" }));
+    await waitFor(() => expect(api.deleteDocumentBookmark).toHaveBeenCalledWith("doc-1"));
+    expect(screen.getByRole("button", { name: "Marcar página atual" })).toBeInTheDocument();
+  });
+
+  it("keeps reading when bookmark loading or saving fails", async () => {
+    api.listDocumentBookmarks.mockRejectedValue(new Error("offline"));
+    api.setDocumentBookmark.mockRejectedValue(new Error("offline"));
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0, 3)] });
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "1");
+    fireEvent.click(screen.getByRole("button", { name: "Marcar página atual" }));
+    await waitFor(() => expect(api.setDocumentBookmark).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /Ir para a página marcada/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
+  });
+
+  it("keeps a bookmark visible when removal fails", async () => {
+    api.listDocumentBookmarks.mockResolvedValue([{
+      document_id: "doc-1", page_number: 2,
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+    }]);
+    api.deleteDocumentBookmark.mockRejectedValue(new Error("offline"));
+    await startSession({ documents: [sessionDocument("doc-1", "Artigo", 0, 3)] });
+    fireEvent.click(screen.getByRole("button", { name: "Remover marcador" }));
+    await waitFor(() => expect(api.deleteDocumentBookmark).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Ir para a página marcada 2" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "3");
   });
 
   it("keeps navigating after an annotation is saved", async () => {
@@ -741,5 +846,23 @@ describe("App", () => {
     await waitFor(() => expect(api.getStudySession).toHaveBeenCalledWith("session-7"));
     await waitFor(() => expect(pdfDocument.props?.file).toBe("/api/documents/doc-4/content"));
     expect(within(document.querySelector(".document-tabs") as HTMLElement).getByText("Capítulo")).toBeInTheDocument();
+  });
+  it("shows the login screen when there is no session", async () => {
+    api.currentAccount.mockRejectedValue(new Error("sem sessão"));
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Notely" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Senha")).toBeInTheDocument();
+    // Sem sessão o Reader não é montado nem busca dados.
+    expect(api.listDocuments).not.toHaveBeenCalled();
+  });
+
+  it("returns to the login screen after signing out", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sair" }));
+
+    await waitFor(() => expect(api.logout).toHaveBeenCalled());
+    expect(await screen.findByRole("heading", { name: "Notely" })).toBeInTheDocument();
   });
 });

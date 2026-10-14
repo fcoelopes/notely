@@ -18,11 +18,19 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from notely.api.app import create_app
 from notely.core.models import AnnotationType
 from notely.core.services import NotelyService
-from notely.db.models import CuratedSourceRow, CurationRequestRow, DocumentCorpusIndexRow, OutboxEventRow
-from notely.db.outbox import SqlAlchemyOutboxStore
+from notely.db.models import (
+    CuratedSourceRow,
+    CurationRequestRow,
+    DocumentCorpusIndexRow,
+    OutboxDeliveryRow,
+    OutboxEventRow,
+)
+from notely.db.outbox import CONSUMER_CURATION, SqlAlchemyOutboxStore
 from notely.db.uow import SqlAlchemyUnitOfWork
 from notely.workers.corpus import run_batch as index_batch
 from notely.workers.curation import run_batch as curate_batch
+from auth_helpers import TEST_USER_ID, ensure_test_user
+from auth_helpers import TEST_USER_ID, authenticate
 from test_corpus import sample_pdf
 from test_integration_corpus import MemoryStorage
 
@@ -46,13 +54,14 @@ async def context():
     except Exception as exc:
         await engine.dispose()
         pytest.skip(f"Curation integration database is unavailable: {exc}")
+    await ensure_test_user(sessions)
     yield sessions
     await engine.dispose()
 
 
 async def register_and_index(sessions, title: str, passage: str):
     content = sample_pdf(passage)
-    service = NotelyService(lambda: SqlAlchemyUnitOfWork(sessions))
+    service = NotelyService(lambda: SqlAlchemyUnitOfWork(sessions, user_id=TEST_USER_ID))
     document = await service.register_document(
         sha256=hashlib.sha256(content).hexdigest(), title=title,
         filename=f"{uuid4()}.pdf", page_count=1,
@@ -67,7 +76,7 @@ async def register_and_index(sessions, title: str, passage: str):
 
 
 async def make_question(sessions, *, index: bool = True):
-    service = NotelyService(lambda: SqlAlchemyUnitOfWork(sessions))
+    service = NotelyService(lambda: SqlAlchemyUnitOfWork(sessions, user_id=TEST_USER_ID))
     content_a = sample_pdf("Enzyme catalysis lowers activation energy")
     content_b = sample_pdf("Enzyme catalysis can lower activation energy through stabilization")
     content_c = sample_pdf("Enzyme catalysis outside the study session")
@@ -124,7 +133,7 @@ async def test_question_gets_verified_sources_only_from_its_session(context) -> 
     assert all(item.available and item.source.page_number == 1 for item in view.sources)
     assert all("Enzyme catalysis" in item.source.excerpt for item in view.sources)
 
-    app = create_app(lambda: service)
+    app = authenticate(create_app(lambda user_id: service))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get(
             f"/api/study-sessions/{study_session.id}/questions/{annotation.id}/sources"
@@ -137,11 +146,12 @@ async def test_question_gets_verified_sources_only_from_its_session(context) -> 
     assert wrong_scope.status_code == 404
 
     async with context() as db:
-        event = await db.scalar(select(OutboxEventRow).where(
-            OutboxEventRow.event_type == "question.curation.requested"
-        ))
-        assert event is not None
-        event.processed_at = None
+        delivery = await db.scalar(
+            select(OutboxDeliveryRow).where(OutboxDeliveryRow.consumer == CONSUMER_CURATION)
+        )
+        assert delivery is not None
+        delivery.processed_at = None
+        delivery.claimed_at = None
         await db.commit()
     await curate_batch(store=SqlAlchemyOutboxStore(context), sessions=context)
     async with context() as db:

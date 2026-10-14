@@ -8,6 +8,14 @@ A proposta é simples: **você continua sendo responsável pela leitura e por de
 
 O projeto nasce para resolver um problema comum: depois de meses ou anos lendo PDFs, os destaques, dúvidas e comentários ficam espalhados entre arquivos, leitores diferentes e anotações difíceis de recuperar. O Notely pretende transformar cada interação de leitura em conhecimento estruturado, sem tirar o usuário do fluxo.
 
+## Executar localmente
+
+```bash
+./scripts/dev.sh
+```
+
+O script aplica as revisões pendentes com Alembic antes de iniciar a API, o Reader e os workers. Consulte [as instruções do backend](backend/README.md) para requisitos, atualização de um banco existente e comandos de teste.
+
 ## Visão do produto
 
 O fluxo principal será:
@@ -78,6 +86,9 @@ Ler sobre um tema normalmente significa ler vários arquivos. O Notely reúne es
 - as anotações continuam vinculadas ao documento de origem, preservando a proveniência;
 - o usuário pode pedir uma **sugestão de tema**, gerada a partir dos títulos e das anotações da sessão. A sugestão fica pendente, mostra provider e modelo, e só entra na sessão quando o usuário aceita; editá-la depois devolve a autoria ao usuário;
 - sessões abertas e documentos já ingeridos ficam disponíveis para retomar a leitura, com o PDF servido pela API a partir do armazenamento de objetos.
+- a visão geral resume as leituras recentes; sessões e documentos completos ficam em coleções com busca, ordenação e paginação.
+- o Reader e a biblioteca mostram o progresso de páginas visualizadas por arquivo e por sessão, conforme [a regra de cálculo](docs/progresso-leitura.md).
+- cada PDF pode ter um [marcador de página](docs/marcador-pagina.md) escolhido pelo usuário para retomar a leitura, independente do progresso.
 
 ## Reader-first, não reader-only
 
@@ -352,6 +363,8 @@ highlight continua lá
 
 Depois dessa base entraram as sessões de estudo com tema autoral, abas de documentos, biblioteca de documentos já ingeridos e sugestões de tema registradas com proveniência.
 
-Ainda entram: enriquecimento assíncrono, busca semântica, grafo, multimodal e pesquisa.
+A projeção de grafo entrou em duas etapas: primeiro documentos e anotações, depois os conceitos extraídos das anotações, sempre marcados como inferência e distintos do que o usuário afirmou.
+
+Ainda entram: claims e as arestas semânticas entre conceitos, busca semântica, multimodal e pesquisa.
 
 O objetivo não é construir todas as capacidades de uma vez. É garantir primeiro que **a leitura e as anotações sejam sólidas**, para então adicionar inteligência sem comprometer o dado mais importante do sistema: aquilo que o usuário decidiu guardar.

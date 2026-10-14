@@ -1,13 +1,14 @@
-import type { SessionDocument } from "../types";
+import type { SessionDocument, SessionProgress } from "../types";
 
 interface Props {
   documents: SessionDocument[];
   activeDocumentId: string | null;
+  progress: SessionProgress | null;
   onSelect: (documentId: string) => void;
   onClose: (documentId: string) => void;
 }
 
-export function DocumentTabs({ documents, activeDocumentId, onSelect, onClose }: Props) {
+export function DocumentTabs({ documents, activeDocumentId, progress, onSelect, onClose }: Props) {
   return (
     <div aria-label="Documentos da sessão" className="document-tabs" role="tablist">
       {documents.map((document) => (
@@ -24,7 +25,7 @@ export function DocumentTabs({ documents, activeDocumentId, onSelect, onClose }:
             type="button"
           >
             <span className="document-tab-title">{document.title}</span>
-            <small>{document.page_count} p.</small>
+            <small title={progress ? `${progress.documents[document.document_id]?.viewed_pages ?? 0}/${document.page_count} páginas visualizadas` : "Progresso indisponível"}>{progress ? `${progress.documents[document.document_id]?.percent ?? 0}%` : "—"}</small>
           </button>
           <button
             aria-label={`Remover ${document.title} da sessão`}

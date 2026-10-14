@@ -37,3 +37,11 @@ Validação: 21 testes passaram em três arquivos; build TypeScript/Vite passou;
 `git diff --check` sem erros. O Vite continua avisando sobre o tamanho do bundle
 que inclui o leitor PDF. Validação visual em navegador não executada.
 Issue permanece pendente por indisponibilidade de acesso ao GitHub.
+
+## Correção de layout da biblioteca (2026-10-08)
+
+Na visão geral, os cartões das sessões excediam a largura da coluna em telas
+intermediárias e cobriam os documentos. As grades agora podem encolher dentro da
+coluna, e as coleções ficam empilhadas até 1200 px. Validação: 46 testes do
+frontend, build e teste geométrico em Chromium a 1440, 972 e 390 px. O teste
+falha no CSS anterior em 972 px e passa após a correção.

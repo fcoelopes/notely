@@ -1,20 +1,71 @@
 from __future__ import annotations
 
+from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
 
 from notely.core.models import (
+    AIModelConfig,
     AISuggestion,
     Annotation,
+    AuthSession,
+    CorpusPassage,
     CurationRequest,
     CuratedSource,
     Document,
+    DocumentBookmark,
     OutboxEvent,
     ReadingSession,
     StudySession,
     StudySessionDocument,
+    User,
 )
+
+
+class IdentityStore(Protocol):
+    """Persistência de contas, sessões, recuperação e tentativas de login."""
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+    async def get_user(self, user_id: UUID) -> User | None: ...
+
+    async def get_user_by_email(self, normalized_email: str) -> User | None: ...
+
+    async def list_users(self) -> list[User]: ...
+
+    async def add_user(self, user: User) -> None: ...
+
+    async def update_user(self, user: User) -> None: ...
+
+    async def add_session(self, session: AuthSession) -> None: ...
+
+    async def get_session(self, token_hash: str) -> AuthSession | None: ...
+
+    async def update_session(self, session: AuthSession) -> None: ...
+
+    async def replace_recovery_codes(
+        self, *, user_id: UUID, code_hashes: list[str], created_at: datetime
+    ) -> None: ...
+
+    async def consume_recovery_code(
+        self, *, user_id: UUID, code_hash: str, used_at: datetime
+    ) -> bool: ...
+
+    async def record_login_attempt(
+        self, *, normalized_email: str, succeeded: bool, at: datetime
+    ) -> None: ...
+
+    async def count_recent_failures(self, *, normalized_email: str, since: datetime) -> int: ...
+
+    async def commit(self) -> None: ...
 
 
 class UnitOfWork(Protocol):
@@ -34,6 +85,12 @@ class UnitOfWork(Protocol):
     async def list_documents(self) -> list[Document]: ...
 
     async def add_document(self, document: Document) -> None: ...
+
+    async def list_document_bookmarks(self) -> list[DocumentBookmark]: ...
+
+    async def save_document_bookmark(self, bookmark: DocumentBookmark) -> DocumentBookmark: ...
+
+    async def delete_document_bookmark(self, document_id: UUID) -> None: ...
 
     async def add_annotation(self, annotation: Annotation) -> None: ...
 
@@ -81,6 +138,18 @@ class UnitOfWork(Protocol):
 
     async def next_study_session_position(self, session_id: UUID) -> int: ...
 
+    async def add_viewed_page(
+        self, session_id: UUID, document_id: UUID, page_number: int, first_viewed_at: datetime
+    ) -> None: ...
+
+    async def list_session_document_page_counts(
+        self, session_id: UUID | None = None
+    ) -> list[tuple[UUID, UUID, int, int]]: ...
+
+    async def list_global_document_page_counts(
+        self, document_id: UUID | None = None
+    ) -> list[tuple[UUID, int, int]]: ...
+
     async def add_ai_suggestion(self, suggestion: AISuggestion) -> None: ...
 
     async def update_ai_suggestion(self, suggestion: AISuggestion) -> None: ...
@@ -90,5 +159,24 @@ class UnitOfWork(Protocol):
     async def list_ai_suggestions(
         self, subject_type: str, subject_id: UUID
     ) -> list[AISuggestion]: ...
+
+    async def get_ai_model_config(self) -> AIModelConfig | None: ...
+
+    async def save_ai_model_config(self, config: AIModelConfig) -> None: ...
+
+    async def delete_ai_model_config(self) -> None: ...
+
+    async def search_session_passages(
+        self,
+        *,
+        session_id: UUID,
+        question: str,
+        document_id: UUID | None = None,
+        limit: int = 5,
+    ) -> list[CorpusPassage]: ...
+
+    async def list_session_annotations(
+        self, *, session_id: UUID, limit: int = 8
+    ) -> list[Annotation]: ...
 
     async def commit(self) -> None: ...

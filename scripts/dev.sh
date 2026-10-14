@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repo_root"
+
+mode=start
+database=notely
+while (( $# > 0 )); do
+  case "$1" in
+    --migrate-only)
+      mode=--migrate-only
+      shift
+      ;;
+    --database)
+      if (( $# < 2 )); then
+        printf 'Uso: %s [--migrate-only] [--database NOME]\n' "$0" >&2
+        exit 2
+      fi
+      database=$2
+      shift 2
+      ;;
+    *)
+      printf 'Uso: %s [--migrate-only] [--database NOME]\n' "$0" >&2
+      exit 2
+      ;;
+  esac
+done
+if [[ ! "$database" =~ ^[A-Za-z_][A-Za-z_0-9]*$ ]]; then
+  printf 'Nome de banco inválido: %s\n' "$database" >&2
+  exit 2
+fi
+
+for executable in docker python3 uv; do
+  command -v "$executable" > /dev/null || { printf 'Comando necessário ausente: %s\n' "$executable" >&2; exit 1; }
+done
+
+local_database_url="postgresql+asyncpg://notely:notely@localhost:5432/$database"
+if [[ -n "${NOTELY_DATABASE_URL:-}" && "$NOTELY_DATABASE_URL" != "$local_database_url" ]]; then
+  printf 'Este script usa o banco Docker local selecionado; NOTELY_DATABASE_URL aponta para outro banco.\n' >&2
+  exit 1
+fi
+export NOTELY_DATABASE_URL="$local_database_url"
+
+if [[ "$mode" == start ]]; then
+  for executable in npm; do
+    command -v "$executable" > /dev/null || { printf 'Comando necessário ausente: %s\n' "$executable" >&2; exit 1; }
+  done
+  python3 - <<'PY'
+import socket
+for port in (8000, 5173):
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError:
+        raise SystemExit(f"Porta {port} em uso. Encerre a instância atual antes de usar scripts/dev.sh.")
+    finally:
+        sock.close()
+PY
+fi
+
+if [[ "$mode" == --migrate-only ]]; then
+  docker compose up -d --wait postgres
+else
+  docker compose up -d --wait postgres minio clamav
+fi
+uv sync --project backend --dev --frozen
+backend/.venv/bin/python scripts/migrate.py --database "$database"
+
+if [[ "$mode" == --migrate-only ]]; then
+  exit 0
+fi
+
+# O Notely não tem tela de cadastro: sem uma conta com senha, a API responde 401 em tudo.
+if ! backend/.venv/bin/python -m notely.cli list-users 2>/dev/null | grep -q "com senha"; then
+  printf '\nNenhuma conta tem senha ainda. Defina a senha do dono do acervo:\n'
+  printf '  backend/.venv/bin/python -m notely.cli bootstrap --email seu@email\n'
+  printf 'A senha é pedida pela linha de comando e o acervo existente continua desse dono.\n\n'
+fi
+
+if [[ ! -x frontend/node_modules/.bin/vite ]]; then
+  npm --prefix frontend ci
+fi
+
+pids=()
+cleanup() {
+  if (( ${#pids[@]} > 0 )); then
+    kill "${pids[@]}" 2>/dev/null || true
+    wait "${pids[@]}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+backend/.venv/bin/uvicorn notely.api.app:app --reload &
+pids+=("$!")
+backend/.venv/bin/python -m notely.workers.timescale &
+pids+=("$!")
+backend/.venv/bin/python -m notely.workers.corpus --backfill &
+pids+=("$!")
+backend/.venv/bin/python -m notely.workers.curation &
+pids+=("$!")
+backend/.venv/bin/python -m notely.workers.graph &
+pids+=("$!")
+backend/.venv/bin/python -m notely.workers.concepts &
+pids+=("$!")
+(cd frontend && exec ./node_modules/.bin/vite --host 127.0.0.1 --strictPort) &
+pids+=("$!")
+
+printf 'Notely iniciado: Reader http://localhost:5173 | API http://localhost:8000/docs\n'
+printf 'Ctrl+C encerra API, frontend e workers; os contêineres Docker continuam ativos.\n'
+wait -n "${pids[@]}"
+printf 'Um processo da aplicação terminou; encerrando os demais.\n' >&2
+exit 1

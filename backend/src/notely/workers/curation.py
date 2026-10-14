@@ -19,7 +19,7 @@ from notely.db.models import (
     DocumentCorpusChunkRow, DocumentCorpusIndexRow, DocumentRow,
     StudySessionDocumentRow,
 )
-from notely.db.outbox import DEFAULT_BATCH_SIZE, SqlAlchemyOutboxStore
+from notely.db.outbox import CONSUMER_CURATION, DEFAULT_BATCH_SIZE, SqlAlchemyOutboxStore
 from notely.providers.pdf_text import EXTRACTOR_VERSION
 from notely.providers.source_curation import (
     LexicalSourceCurationProvider, SourceCurationProvider,
@@ -82,12 +82,17 @@ async def run_batch(
     provider = provider or LexicalSourceCurationProvider()
     stats = {"claimed": 0, "ready": 0, "no_source": 0, "pending": 0, "failed": 0}
     async with sessions() as session:
-        events = await store.claim(session=session, batch_size=batch_size, event_types=EVENT_TYPES)
+        events = await store.claim(
+            session=session,
+            consumer=CONSUMER_CURATION,
+            batch_size=batch_size,
+            event_types=EVENT_TYPES,
+        )
         stats["claimed"] = len(events)
         for event in events:
             request = await session.get(CurationRequestRow, event.aggregate_id)
             if request is None or request.version != event.payload.get("version") or request.status != "pending":
-                await store.mark_processed(session=session, event_id=event.id)
+                await store.mark_processed(session=session, event_id=event.id, consumer=CONSUMER_CURATION)
                 continue
             annotation = await session.get(AnnotationRow, request.annotation_id)
             try:
@@ -140,6 +145,7 @@ async def run_batch(
                 for rank, (candidate, reason) in enumerate(validated, 1):
                     session.add(CuratedSourceRow(
                         id=uuid4(), request_id=request.id,
+                        user_id=request.user_id,
                         document_id=candidate.document_id,
                         page_number=candidate.page_number,
                         chunk_number=candidate.chunk_number,
@@ -155,18 +161,20 @@ async def run_batch(
                 request.last_error = None
                 request.updated_at = utc_now()
                 request.completed_at = request.updated_at
-                await store.mark_processed(session=session, event_id=event.id)
+                await store.mark_processed(session=session, event_id=event.id, consumer=CONSUMER_CURATION)
                 stats[request.status] += 1
             except (RuntimeError, ValueError) as exc:
                 logger.warning("curation failed for request %s: %s", request.id, exc)
-                await store.mark_failed(session=session, event_id=event.id, error=str(exc))
+                await store.mark_failed(
+                    session=session, event_id=event.id, consumer=CONSUMER_CURATION, error=str(exc)
+                )
                 request.attempt_count = event.attempt_count + 1
                 request.updated_at = utc_now()
                 request.last_error = str(exc)[:500]
                 if request.attempt_count >= store.max_attempts or isinstance(exc, ValueError):
                     request.status = "failed"
                     request.completed_at = request.updated_at
-                    await store.mark_processed(session=session, event_id=event.id)
+                    await store.mark_processed(session=session, event_id=event.id, consumer=CONSUMER_CURATION)
                     stats["failed"] += 1
                 else:
                     stats["pending"] += 1

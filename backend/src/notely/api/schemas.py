@@ -7,10 +7,12 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from notely.core.models import (
+    AIModelProvider,
     AnnotationSource,
     AnnotationType,
     CurationStatus,
     AuthorType,
+    SessionStage,
     SuggestionStatus,
     ThemeOrigin,
 )
@@ -31,6 +33,19 @@ class DocumentResponse(DocumentCreate):
 
     id: UUID
     mime_type: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentBookmarkSet(BaseModel):
+    page_number: int = Field(ge=1)
+
+
+class DocumentBookmarkResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    document_id: UUID
+    page_number: int
     created_at: datetime
     updated_at: datetime
 
@@ -168,3 +183,115 @@ class QuestionSourcesResponse(BaseModel):
     version: int
     last_error: str | None
     sources: list[CuratedSourceResponse]
+
+
+class PageProgressResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    viewed_pages: int
+    total_pages: int
+    percent: int
+
+
+class SessionProgressResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    progress: PageProgressResponse
+    documents: dict[UUID, PageProgressResponse]
+
+
+class ReadingProgressSnapshotResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    documents: dict[UUID, PageProgressResponse]
+    sessions: dict[UUID, SessionProgressResponse]
+
+
+class ReadingProgressUpdateResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    study_session_id: UUID
+    document_id: UUID
+    session: SessionProgressResponse
+    document_global: PageProgressResponse
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=1, max_length=254)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class MfaCodeRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
+
+
+class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    email: str
+    totp_enabled: bool
+
+
+class AuthSessionResponse(BaseModel):
+    """`mfa_required` diz ao Reader que a sessão ainda não vale para ler."""
+
+    stage: SessionStage
+    mfa_required: bool
+    user: UserResponse
+
+
+class EnrollmentResponse(BaseModel):
+    secret: str
+    uri: str
+
+
+class RecoveryCodesResponse(BaseModel):
+    """Exibidos uma única vez; o servidor guarda apenas o hash."""
+
+    recovery_codes: list[str]
+
+
+class DisableMfaRequest(BaseModel):
+    # Desativar o segundo fator exige a senha: uma sessão roubada não basta.
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class AIModelConfigRequest(BaseModel):
+    provider: AIModelProvider
+    model: str = Field(min_length=1, max_length=200)
+    # Sem chave, a que já está guardada é mantida; a chave nunca é devolvida.
+    api_key: str | None = Field(default=None, max_length=400)
+    base_url: str | None = Field(default=None, max_length=500)
+    enabled: bool = True
+
+
+class AIModelConfigResponse(BaseModel):
+    provider: AIModelProvider
+    model: str
+    base_url: str | None
+    enabled: bool
+    has_key: bool
+
+
+class AssistantChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    study_session_id: UUID | None = None
+    document_id: UUID | None = None
+
+
+class AssistantSourceResponse(BaseModel):
+    document_id: UUID
+    document_title: str
+    page_number: int
+    excerpt: str
+
+
+class AssistantAnswerResponse(BaseModel):
+    """Resposta de modelo. `grounded` diz se ela se apoiou no material do usuário."""
+
+    answer: str
+    provider: str
+    model: str
+    grounded: bool
+    sources: list[AssistantSourceResponse]

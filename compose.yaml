@@ -1,10 +1,12 @@
 services:
   postgres:
-    image: timescale/timescaledb:2.30.2-pg17
+    build:
+      context: infra/db
+    image: notely-postgres:age-1.7.0-pg17
     command:
       - postgres
       - -c
-      - shared_preload_libraries=timescaledb
+      - shared_preload_libraries=timescaledb,age
     environment:
       POSTGRES_DB: notely
       POSTGRES_USER: notely

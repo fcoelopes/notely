@@ -10,7 +10,7 @@ import os
 from tempfile import SpooledTemporaryFile
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, exists, select
+from sqlalchemy import and_, delete, exists, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -21,9 +21,10 @@ from notely.db.models import (
     DocumentCorpusIndexRow,
     DocumentCorpusPageRow,
     DocumentRow,
+    OutboxDeliveryRow,
     OutboxEventRow,
 )
-from notely.db.outbox import DEFAULT_BATCH_SIZE, SqlAlchemyOutboxStore
+from notely.db.outbox import CONSUMER_CORPUS, DEFAULT_BATCH_SIZE, SqlAlchemyOutboxStore
 from notely.providers.pdf_text import EXTRACTOR_VERSION, PdfTextExtractionError, extract_page_text
 from notely.providers.storage import MinioObjectStorage, ObjectStorageError
 
@@ -106,13 +107,29 @@ async def save_failure(
 
 
 async def enqueue_missing_documents(session: AsyncSession) -> int:
+    # Pendente para o consumidor de corpus: evento do tipo deste worker, deste documento,
+    # que ou ainda não tem entrega materializada, ou tem entrega não resolvida.
     pending = exists(
-        select(OutboxEventRow.id).where(
+        select(OutboxEventRow.id)
+        .select_from(OutboxEventRow)
+        .outerjoin(
+            OutboxDeliveryRow,
+            and_(
+                OutboxDeliveryRow.event_id == OutboxEventRow.id,
+                OutboxDeliveryRow.consumer == CONSUMER_CORPUS,
+            ),
+        )
+        .where(
             OutboxEventRow.aggregate_type == "document",
             OutboxEventRow.aggregate_id == DocumentRow.id,
             OutboxEventRow.event_type.in_(list(EVENT_TYPES)),
-            OutboxEventRow.processed_at.is_(None),
-            OutboxEventRow.attempt_count < 8,
+            or_(
+                OutboxDeliveryRow.event_id.is_(None),
+                and_(
+                    OutboxDeliveryRow.processed_at.is_(None),
+                    OutboxDeliveryRow.attempt_count < 8,
+                ),
+            ),
         )
     )
     rows = (
@@ -131,6 +148,7 @@ async def enqueue_missing_documents(session: AsyncSession) -> int:
         now = utc_now()
         statement = insert(OutboxEventRow).values(
             id=uuid4(),
+            user_id=row.user_id,
             aggregate_type="document",
             aggregate_id=row.id,
             event_type="document.corpus.rebuild",
@@ -154,14 +172,17 @@ async def run_batch(
     stats = {"claimed": 0, "indexed": 0, "failed": 0}
     async with sessions() as session:
         events = await store.claim(
-            session=session, batch_size=batch_size, event_types=EVENT_TYPES
+            session=session,
+            consumer=CONSUMER_CORPUS,
+            batch_size=batch_size,
+            event_types=EVENT_TYPES,
         )
         stats["claimed"] = len(events)
         for event in events:
             document_id = UUID(str(event.payload.get("document_id", event.aggregate_id)))
             row = await session.get(DocumentRow, document_id)
             if row is None:
-                await store.mark_processed(session=session, event_id=event.id)
+                await store.mark_processed(session=session, event_id=event.id, consumer=CONSUMER_CORPUS)
                 continue
             index = await session.get(DocumentCorpusIndexRow, document_id)
             if (
@@ -170,7 +191,7 @@ async def run_batch(
                 and index.extractor_version == EXTRACTOR_VERSION
                 and index.source_sha256 == row.sha256
             ):
-                await store.mark_processed(session=session, event_id=event.id)
+                await store.mark_processed(session=session, event_id=event.id, consumer=CONSUMER_CORPUS)
                 continue
             try:
                 pages = await read_and_extract(storage, row)
@@ -178,16 +199,18 @@ async def run_batch(
                 await save_failure(
                     session, row, str(exc), actual_page_count=exc.actual_page_count
                 )
-                await store.mark_processed(session=session, event_id=event.id)
+                await store.mark_processed(session=session, event_id=event.id, consumer=CONSUMER_CORPUS)
                 stats["failed"] += 1
             except (ObjectStorageError, OSError) as exc:
-                await store.mark_failed(session=session, event_id=event.id, error=str(exc))
+                await store.mark_failed(
+                    session=session, event_id=event.id, consumer=CONSUMER_CORPUS, error=str(exc)
+                )
                 if event.attempt_count + 1 >= store.max_attempts:
                     await save_failure(session, row, str(exc))
                 stats["failed"] += 1
             else:
                 await save_pages(session, row, pages)
-                await store.mark_processed(session=session, event_id=event.id)
+                await store.mark_processed(session=session, event_id=event.id, consumer=CONSUMER_CORPUS)
                 stats["indexed"] += 1
         await session.commit()
     return stats

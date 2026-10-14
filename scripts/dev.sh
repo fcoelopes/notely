@@ -48,8 +48,12 @@ if [[ "$mode" == start ]]; then
   done
   python3 - <<'PY'
 import socket
+
+# SO_REUSEADDR evita recusar uma porta ocupada apenas por conexao encerrada (TIME_WAIT).
+# Uma instancia de fato escutando continua bloqueando o bind.
 for port in (8000, 5173):
     sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind(("127.0.0.1", port))
     except OSError:

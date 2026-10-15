@@ -98,16 +98,39 @@ pela migration que o introduz, para não reprojetar o acervo inteiro. Ver
 uv run --project backend pytest
 ```
 
-Os testes de integração (`tests/test_integration_timescale.py`) exigem um banco de teste com
-as migrations aplicadas e são pulados quando ele não existe:
+Os testes de integração (`tests/test_integration_*.py`) exigem um banco de teste com as
+migrations aplicadas e são pulados quando ele não existe, ou quando falta a extensão do AGE:
 
 ```bash
 docker compose exec -T postgres psql -U notely -d postgres -c "create database notely_test owner notely"
 backend/.venv/bin/python scripts/migrate.py --database notely_test
 ```
 
-Use `NOTELY_TEST_DATABASE_URL` para apontar para outro banco. Cada teste limpa as tabelas do
-banco de teste antes de executar.
+Use `NOTELY_TEST_DATABASE_URL` para apontar para outro banco, e passe a variável sempre: sem ela
+o default é `notely_test` em `localhost:5432`, e um subprocesso do Alembic que fique sem ela usa
+o `sqlalchemy.url` de `alembic.ini`, que aponta para o banco real `notely` — foi assim que um
+`downgrade` de teste chegou ao banco real uma vez.
+
+Cada teste limpa o banco antes de executar: `delete from documents`, `delete from claims`,
+`delete from outbox_events` e um `MATCH (n) DETACH DELETE n` que apaga o grafo inteiro. Essa
+limpeza é global, não é escopada ao que aquele teste criou, e é por isso que **duas execuções
+simultâneas contra o mesmo banco se destroem**: uma apaga as linhas que a outra está afirmando,
+e as duas emitem `DETACH DELETE` no mesmo grafo ao mesmo tempo, que responde `Entity could not be
+locked for updating`. O sintoma engana, porque as falhas aparecem em testes sem relação entre si
+— inclusive em testes que a mudança em curso nem tocou.
+
+Rode uma execução por vez, ou dê um banco a cada execução:
+
+```bash
+docker compose exec -T postgres psql -U notely -d postgres -c "create database notely_run owner notely"
+NOTELY_DATABASE_URL=postgresql+asyncpg://notely:notely@localhost:5432/notely_run \
+  backend/.venv/bin/alembic -c alembic.ini upgrade head
+NOTELY_TEST_DATABASE_URL=postgresql+asyncpg://notely:notely@localhost:5432/notely_run \
+  uv run --project backend pytest
+```
+
+O efeito dessa disputa é só sobre o banco de teste: a aplicação e o acervo não são alcançados, e
+o que fica errado é o veredito sobre o código.
 
 Os contratos HTTP ficam disponíveis em `http://localhost:8000/docs`.
 

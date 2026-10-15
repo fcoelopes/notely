@@ -230,19 +230,36 @@ def test_downgrade_cannot_discard_document_bookmark(database: str, tmp_path: Pat
                              "(user_id, document_id, page_number, created_at, updated_at) "
                              f"VALUES ('{BOOTSTRAP_USER}', '{document_id}', 2, now(), now());"))
     assert inserted.returncode == 0, inserted.stderr
-    preview = subprocess.run(
-        [sys.executable, str(ROLLBACK), "--database", database, "--target", "0013",
-         "--backup-dir", str(tmp_path)],
-        text=True, capture_output=True, cwd=ROOT, check=False,
-    )
-    assert preview.returncode == 0, preview.stderr
-    assert "Protected data: document bookmarks" in preview.stdout
     environment = os.environ | {
         "NOTELY_DATABASE_URL": f"postgresql+asyncpg://notely:notely@localhost:5432/{database}"
     }
+    # A revisão que introduz o marcador e o alvo imediatamente anterior a ela. O histórico é
+    # derivado em vez de fixado: uma migration nova acima do marcador deslocaria um alvo fixo.
+    bookmarks = "0014"
+    target = parent_of(bookmarks)
+    # O script de rollback desce um passo por vez, com backup e restore completos em cada um,
+    # então o head é trazido direto até a revisão do marcador — como em
+    # `test_downgrade_cannot_discard_reading_progress` — para que o passo testado seja
+    # exatamente o `down` do marcador.
+    if HEAD != bookmarks:
+        stepped = subprocess.run(
+            [str(ROOT / "backend" / ".venv" / "bin" / "alembic"), "-c", "alembic.ini",
+             "downgrade", bookmarks],
+            text=True, capture_output=True, cwd=ROOT, env=environment, check=False,
+        )
+        assert stepped.returncode == 0, (stepped.stdout, stepped.stderr)
+    # A prévia roda com o ambiente do banco descartável: sem ele o script leria a revisão do
+    # banco de desenvolvimento e a prévia descreveria outro banco.
+    preview = subprocess.run(
+        [sys.executable, str(ROLLBACK), "--database", database, "--target", target,
+         "--backup-dir", str(tmp_path)],
+        text=True, capture_output=True, cwd=ROOT, env=environment, check=False,
+    )
+    assert preview.returncode == 0, (preview.stdout, preview.stderr)
+    assert "Protected data: document bookmarks" in preview.stdout
     direct = subprocess.run(
         [str(ROOT / "backend" / ".venv" / "bin" / "alembic"), "-c", "alembic.ini",
-         "downgrade", "0013"],
+         "downgrade", target],
         text=True, capture_output=True, cwd=ROOT, env=environment, check=False,
     )
     assert direct.returncode != 0
@@ -250,7 +267,56 @@ def test_downgrade_cannot_discard_document_bookmark(database: str, tmp_path: Pat
     preserved = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
                        "select (select version_num from alembic_version), "
                        "(select count(*) from document_bookmarks)")
-    assert preserved.stdout.strip() == "0014|1"
+    assert preserved.stdout.strip() == f"{bookmarks}|1"
+
+
+def test_downgrade_of_claims_guards_user_authored_rows(database: str, tmp_path: Path) -> None:
+    """O `down` da revisão de afirmações é recusado enquanto houver afirmação autoral.
+
+    Afirmação do usuário não é reconstruível a partir de nada, então o `down` só procede
+    quando não há nada autoral a perder.
+    """
+    assert migrate(database, tmp_path).returncode == 0
+    # A revisão que introduziu `claims` e o alvo imediatamente anterior a ela. Nomear a
+    # revisão é explícito porque o alvo guardado é o `down` dela, não o de outra migration.
+    claims = "0015"
+    target = parent_of(claims)
+    environment = os.environ | {
+        "NOTELY_DATABASE_URL": f"postgresql+asyncpg://notely:notely@localhost:5432/{database}"
+    }
+    inserted = docker("psql", "-v", "ON_ERROR_STOP=1", "-U", "notely", "-d", database,
+                      input=("INSERT INTO claims (id, user_id, text, normalized_text, "
+                             "provenance, status, created_at, updated_at, accepted_at) VALUES "
+                             f"(gen_random_uuid(), '{BOOTSTRAP_USER}', 'a materialidade e "
+                             "julgada caso a caso', 'a materialidade e julgada caso a caso', "
+                             "'user_authored', 'accepted', now(), now(), now());"))
+    assert inserted.returncode == 0, inserted.stderr
+    refused = subprocess.run(
+        [str(ROOT / "backend" / ".venv" / "bin" / "alembic"), "-c", "alembic.ini",
+         "downgrade", target],
+        text=True, capture_output=True, cwd=ROOT, env=environment, check=False,
+    )
+    assert refused.returncode != 0
+    assert "would discard: user claims" in refused.stderr
+    preserved = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
+                       "select (select version_num from alembic_version), "
+                       "(select count(*) from claims)")
+    assert preserved.stdout.strip() == f"{claims}|1"
+    # Sem afirmação autoral, o mesmo passo procede e remove tabelas e rótulos.
+    assert docker("psql", "-v", "ON_ERROR_STOP=1", "-U", "notely", "-d", database,
+                  input="DELETE FROM claims;").returncode == 0
+    applied = subprocess.run(
+        [str(ROOT / "backend" / ".venv" / "bin" / "alembic"), "-c", "alembic.ini",
+         "downgrade", target],
+        text=True, capture_output=True, cwd=ROOT, env=environment, check=False,
+    )
+    assert applied.returncode == 0, (applied.stdout, applied.stderr)
+    removed = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
+                     "select (select version_num from alembic_version), "
+                     "coalesce(to_regclass('public.claims')::text, 'gone'), "
+                     "coalesce(to_regclass('public.claim_relations')::text, 'gone'), "
+                     "(select count(*) from ag_catalog.ag_label where name = 'Claim')")
+    assert removed.stdout.strip() == f"{target}|gone|gone|0"
 
 
 def test_backup_restores_to_new_database_and_startup_can_use_it(database: str, tmp_path: Path) -> None:

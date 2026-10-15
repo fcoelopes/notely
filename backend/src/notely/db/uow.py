@@ -4,7 +4,7 @@ from datetime import datetime
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -13,17 +13,23 @@ from notely.core.models import (
     AIModelProvider,
     AISuggestion,
     Annotation,
+    AnnotationSource,
+    AnnotationType,
+    AuthorType,
+    Claim,
+    ClaimRelation,
+    ClaimRelationKind,
+    Concept,
     CorpusPassage,
     CurationRequest,
     CurationStatus,
     CuratedSource,
-    ReadingSession,
-    AnnotationSource,
-    AnnotationType,
-    AuthorType,
     Document,
     DocumentBookmark,
     OutboxEvent,
+    ReadingSession,
+    RelationProvenance,
+    RelationStatus,
     StudySession,
     StudySessionDocument,
     SuggestionStatus,
@@ -38,6 +44,9 @@ from notely.db.models import (
     AIModelConfigRow,
     AISuggestionRow,
     AnnotationRow,
+    ClaimRelationRow,
+    ClaimRow,
+    ConceptRow,
     CurationRequestRow,
     CuratedSourceRow,
     DocumentCorpusChunkRow,
@@ -532,6 +541,179 @@ class SqlAlchemyUnitOfWork:
         )
         return _to_ai_model_config(row) if row else None
 
+    async def get_claim(self, claim_id: UUID) -> Claim | None:
+        row = await self._active_session().scalar(
+            select(ClaimRow).where(
+                ClaimRow.id == claim_id,
+                ClaimRow.user_id == self._user_id,
+                ClaimRow.deleted_at.is_(None),
+            )
+        )
+        return _to_claim(row) if row else None
+
+    async def upsert_claim(self, claim: Claim) -> Claim:
+        """Reaproveita a afirmação de mesmo texto normalizado e devolve a linha de verdade.
+
+        A deduplicação é o índice único **parcial** `(user_id, normalized_text) WHERE
+        deleted_at IS NULL`: duas afirmações com o mesmo texto convivem quando a primeira
+        foi removida. O `WHERE` do alvo precisa ser declarado aqui, senão o PostgreSQL não
+        reconhece o índice e o `ON CONFLICT` falha.
+        """
+        statement = (
+            insert(ClaimRow)
+            .values(
+                id=claim.id,
+                user_id=self._user_id,
+                text=claim.text,
+                normalized_text=claim.normalized_text,
+                provenance=claim.provenance.value,
+                status=claim.status.value,
+                provider=claim.provider,
+                model=claim.model,
+                confidence=claim.confidence,
+                created_at=claim.created_at,
+                updated_at=claim.updated_at,
+                accepted_at=claim.accepted_at,
+                deleted_at=claim.deleted_at,
+            )
+            .on_conflict_do_update(
+                index_elements=[ClaimRow.user_id, ClaimRow.normalized_text],
+                index_where=text("deleted_at IS NULL"),
+                # Afirmar de novo atualiza o texto exibido e confirma o estado autoral; a
+                # data de criação da afirmação original é preservada.
+                set_={
+                    "text": claim.text,
+                    "provenance": claim.provenance.value,
+                    "status": claim.status.value,
+                    "provider": claim.provider,
+                    "model": claim.model,
+                    "confidence": claim.confidence,
+                    "updated_at": claim.updated_at,
+                    "accepted_at": claim.accepted_at,
+                },
+            )
+            .returning(ClaimRow)
+        )
+        row = (await self._active_session().scalars(statement)).one()
+        return _to_claim(row)
+
+    async def list_claims(self) -> list[Claim]:
+        rows = (
+            await self._active_session().scalars(
+                select(ClaimRow)
+                .where(ClaimRow.user_id == self._user_id, ClaimRow.deleted_at.is_(None))
+                .order_by(ClaimRow.created_at, ClaimRow.id)
+            )
+        ).all()
+        return [_to_claim(row) for row in rows]
+
+    async def mark_claim_deleted(self, claim_id: UUID, deleted_at: datetime) -> None:
+        """Exclusão suave: a afirmação sai do que o usuário vê, mas não do banco.
+
+        O `WHERE deleted_at IS NULL` mantém a operação idempotente sem reescrever a data
+        original da primeira remoção.
+        """
+        await self._active_session().execute(
+            update(ClaimRow)
+            .where(
+                ClaimRow.id == claim_id,
+                ClaimRow.user_id == self._user_id,
+                ClaimRow.deleted_at.is_(None),
+            )
+            .values(deleted_at=deleted_at, updated_at=deleted_at)
+        )
+
+    async def add_claim_relation(self, relation: ClaimRelation) -> ClaimRelation:
+        """Cria a aresta ou devolve a que já existe para o mesmo par ordenado.
+
+        Repetir a mesma aresta é idempotente por `UNIQUE NULLS NOT DISTINCT` sobre o par
+        ordenado — necessário porque as colunas que a relação não usa ficam nulas. O
+        conflito é resolvido reescrevendo a própria chave primária: é um no-op de conteúdo
+        que garante `RETURNING` (devolve a aresta já existente, com o id dela) e mantém a
+        operação idempotente sob retry. O alvo é a restrição por nome, que é como o
+        `NULLS NOT DISTINCT` foi declarado.
+        """
+        statement = (
+            insert(ClaimRelationRow)
+            .values(
+                id=relation.id,
+                user_id=self._user_id,
+                relation=relation.relation.value,
+                annotation_id=relation.annotation_id,
+                claim_id=relation.claim_id,
+                question_annotation_id=relation.question_annotation_id,
+                answer_annotation_id=relation.answer_annotation_id,
+                source_concept_id=relation.source_concept_id,
+                target_concept_id=relation.target_concept_id,
+                provenance=relation.provenance.value,
+                status=relation.status.value,
+                provider=relation.provider,
+                model=relation.model,
+                confidence=relation.confidence,
+                created_at=relation.created_at,
+                accepted_at=relation.accepted_at,
+            )
+            .on_conflict_do_update(
+                constraint="claim_relations_pair_key",
+                set_={"id": ClaimRelationRow.id},
+            )
+            .returning(ClaimRelationRow)
+        )
+        row = (await self._active_session().scalars(statement)).one()
+        return _to_claim_relation(row)
+
+    async def get_concept(self, concept_id: UUID) -> Concept | None:
+        """Escopado por dono: conceito de outra conta simplesmente não é encontrado."""
+        row = await self._active_session().scalar(
+            select(ConceptRow).where(
+                ConceptRow.id == concept_id, ConceptRow.user_id == self._user_id
+            )
+        )
+        return _to_concept(row) if row else None
+
+    async def get_claim_relation(self, relation_id: UUID) -> ClaimRelation | None:
+        row = await self._active_session().scalar(
+            select(ClaimRelationRow).where(
+                ClaimRelationRow.id == relation_id,
+                ClaimRelationRow.user_id == self._user_id,
+            )
+        )
+        return _to_claim_relation(row) if row else None
+
+    async def list_claim_relations(
+        self,
+        *,
+        annotation_id: UUID | None = None,
+        claim_id: UUID | None = None,
+    ) -> list[ClaimRelation]:
+        statement = select(ClaimRelationRow).where(
+            ClaimRelationRow.user_id == self._user_id
+        )
+        if annotation_id is not None:
+            statement = statement.where(
+                or_(
+                    ClaimRelationRow.annotation_id == annotation_id,
+                    ClaimRelationRow.question_annotation_id == annotation_id,
+                    ClaimRelationRow.answer_annotation_id == annotation_id,
+                )
+            )
+        if claim_id is not None:
+            statement = statement.where(ClaimRelationRow.claim_id == claim_id)
+        rows = (
+            await self._active_session().scalars(
+                statement.order_by(ClaimRelationRow.created_at, ClaimRelationRow.id)
+            )
+        ).all()
+        return [_to_claim_relation(row) for row in rows]
+
+    async def remove_claim_relation(self, relation_id: UUID) -> None:
+        await self._active_session().execute(
+            delete(ClaimRelationRow).where(
+                ClaimRelationRow.id == relation_id,
+                ClaimRelationRow.user_id == self._user_id,
+            )
+        )
+
     async def search_session_passages(
         self,
         *,
@@ -630,8 +812,53 @@ def _study_session_row(session: StudySession, *, user_id: UUID) -> StudySessionR
     )
 
 
-def _to_document_bookmark(row: DocumentBookmarkRow) -> DocumentBookmark:
-    return DocumentBookmark(
+def _to_concept(row: ConceptRow) -> Concept:
+    return Concept(
+        id=row.id,
+        name=row.name,
+        normalized_name=row.normalized_name,
+        created_at=row.created_at,
+    )
+
+
+def _to_claim(row: ClaimRow) -> Claim:
+    return Claim(
+        id=row.id,
+        text=row.text,
+        normalized_text=row.normalized_text,
+        provenance=RelationProvenance(row.provenance),
+        status=RelationStatus(row.status),
+        provider=row.provider,
+        model=row.model,
+        confidence=row.confidence,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        accepted_at=row.accepted_at,
+        deleted_at=row.deleted_at,
+    )
+
+
+def _to_claim_relation(row: ClaimRelationRow) -> ClaimRelation:
+    return ClaimRelation(
+        id=row.id,
+        relation=ClaimRelationKind(row.relation),
+        provenance=RelationProvenance(row.provenance),
+        status=RelationStatus(row.status),
+        annotation_id=row.annotation_id,
+        claim_id=row.claim_id,
+        question_annotation_id=row.question_annotation_id,
+        answer_annotation_id=row.answer_annotation_id,
+        source_concept_id=row.source_concept_id,
+        target_concept_id=row.target_concept_id,
+        provider=row.provider,
+        model=row.model,
+        confidence=row.confidence,
+        created_at=row.created_at,
+        accepted_at=row.accepted_at,
+    )
+
+
+def _to_document_bookmark(row: DocumentBookmarkRow) -> DocumentBookmark:    return DocumentBookmark(
         document_id=row.document_id,
         page_number=row.page_number,
         created_at=row.created_at,

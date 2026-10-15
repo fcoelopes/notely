@@ -208,6 +208,43 @@ Nada é promovido a conhecimento autoral sem aceite explícito do usuário: as r
 nascem `suggested` e a promoção grava `accepted_at`. Ver
 [ADR 0005](../docs/adr/0005-concept-extraction-as-inference.md).
 
+## Afirmações e arestas semânticas no grafo (issue #21)
+
+O `Claim` é conhecimento autoral: a pessoa lê um trecho, afirma uma proposição e declara se
+aquele trecho a sustenta ou a contradiz. Aplica-se a migration `0015`, que cria `claims` e
+`claim_relations` e os rótulos `Claim`, `SUPPORTS`, `CONTRADICTS`, `ANSWERED_BY` e
+`RELATED_TO` no grafo. Todas as rotas exigem sessão ativa e são escopadas por dono:
+
+```text
+POST   /api/claims                          {annotation_id, text, relation} com relation em
+                                            supports | contradicts; reaproveita a afirmação
+                                            de mesmo texto e apenas acrescenta evidência
+GET    /api/claims                          afirmações do usuário com a evidência
+                                            (documento, página, trecho, relação e proveniência)
+DELETE /api/claims/{claim_id}               exclusão suave e remoção do nó no grafo
+POST   /api/questions/{annotation_id}/answers   {answer_annotation_id} cria ANSWERED_BY
+POST   /api/concept-relations               {source_concept_id, target_concept_id} cria RELATED_TO
+DELETE /api/claim-relations/{relation_id}   remove qualquer aresta semântica
+```
+
+A API grava a afirmação, a aresta e o evento de outbox **na mesma transação**
+(`claim.created`, `claim.relation.created`, `claim.deleted`, `claim.relation.removed`). O
+worker de grafo continua sendo o único escritor no AGE e projeta o nó `Claim` e as quatro
+arestas a partir do estado do PostgreSQL:
+
+```bash
+uv run --project backend python -m notely.workers.graph --once
+uv run --project backend python -m notely.workers.graph --rebuild
+```
+
+O nó carrega `source_id`, `text`, `provenance` e `status`; as arestas carregam `provenance` e
+`status`. Uma afirmação feita pela API nasce `user_authored` e `accepted`: `user_authored` é
+produzida pelo usuário, enquanto `user_confirmed` é relação **inferida** que ele aceitou — as
+duas permanecem distinguíveis no grafo. Documento, anotação, conceito ou afirmação de outra
+conta respondem como inexistentes. Remover uma afirmação tira o nó e as arestas do grafo; a
+linha permanece no PostgreSQL com `deleted_at` e o `--rebuild` a ignora. Ver
+[ADR 0008](../docs/adr/0008-claims-and-semantic-edges.md).
+
 ## Contas, sessão e segundo fator (issue #7)
 
 Todas as rotas de domínio exigem sessão ativa: sem cookie válido a API responde `401`

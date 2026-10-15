@@ -10,6 +10,9 @@ from notely.core.models import (
     AISuggestion,
     Annotation,
     AuthSession,
+    Claim,
+    ClaimRelation,
+    Concept,
     CorpusPassage,
     CurationRequest,
     CuratedSource,
@@ -165,6 +168,29 @@ class UnitOfWork(Protocol):
     async def save_ai_model_config(self, config: AIModelConfig) -> None: ...
 
     async def delete_ai_model_config(self) -> None: ...
+
+    async def get_claim(self, claim_id: UUID) -> Claim | None: ...
+
+    async def upsert_claim(self, claim: Claim) -> Claim: ...
+
+    async def list_claims(self) -> list[Claim]: ...
+
+    async def mark_claim_deleted(self, claim_id: UUID, deleted_at: datetime) -> None: ...
+
+    async def get_concept(self, concept_id: UUID) -> Concept | None: ...
+
+    async def add_claim_relation(self, relation: ClaimRelation) -> ClaimRelation: ...
+
+    async def get_claim_relation(self, relation_id: UUID) -> ClaimRelation | None: ...
+
+    async def list_claim_relations(
+        self,
+        *,
+        annotation_id: UUID | None = None,
+        claim_id: UUID | None = None,
+    ) -> list[ClaimRelation]: ...
+
+    async def remove_claim_relation(self, relation_id: UUID) -> None: ...
 
     async def search_session_passages(
         self,

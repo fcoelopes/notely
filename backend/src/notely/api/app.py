@@ -26,10 +26,16 @@ from notely.api.schemas import (
     AISuggestionResponse,
     AnnotationCreate,
     AnnotationResponse,
+    AnsweredByRequest,
     AssistantAnswerResponse,
     AssistantChatRequest,
     AssistantSourceResponse,
     AuthSessionResponse,
+    ClaimAssertion,
+    ClaimEvidenceResponse,
+    ClaimRelationResponse,
+    ClaimResponse,
+    ConceptRelationRequest,
     CuratedSourceResponse,
     DisableMfaRequest,
     EnrollmentResponse,
@@ -66,6 +72,7 @@ from notely.core.auth import (
     UserExistsError,
     UserNotFoundError,
 )
+from notely.core.claims import ClaimEvidence
 from notely.core.identity import IdentityError
 from notely.core.ingestion import (
     DocumentIngestionService,
@@ -75,6 +82,7 @@ from notely.core.ingestion import (
 from notely.core.models import (
     AIModelConfig,
     AISuggestion,
+    ClaimRelation,
     Document,
     StudySession,
     StudySessionDocument,
@@ -89,6 +97,9 @@ from notely.core.study_assistant import (
     StudyAssistant,
 )
 from notely.core.services import (
+    AnsweredQuestionNotFoundError,
+    ClaimNotFoundError,
+    ClaimRelationNotFoundError,
     CurationNotFoundError,
     CurationRetryConflictError,
     DocumentConflictError,
@@ -97,6 +108,7 @@ from notely.core.services import (
     PageOutsideDocumentError,
     ReadingSessionDocumentMismatchError,
     ReadingSessionNotFoundError,
+    RelatedConceptNotFoundError,
     SessionDocumentConflictError,
     SessionDocumentNotFoundError,
     SessionWithoutDocumentsError,
@@ -249,6 +261,27 @@ def _ai_config_payload(config: AIModelConfig) -> AIModelConfigResponse:
         enabled=config.enabled,
         has_key=bool(config.api_key_encrypted),
     )
+
+
+def _claim_evidence_payload(evidence: ClaimEvidence) -> ClaimEvidenceResponse:
+    """Traduz a evidência do domínio para a resposta: afirmação + aresta + trecho."""
+    return ClaimEvidenceResponse(
+        claim=ClaimResponse.model_validate(evidence.claim),
+        relation=evidence.relation.relation,
+        relation_id=evidence.relation.id,
+        relation_provenance=evidence.relation.provenance,
+        relation_status=evidence.relation.status,
+        annotation_id=evidence.relation.annotation_id,
+        document_id=evidence.document_id,
+        document_title=evidence.document_title,
+        page_number=evidence.page_number,
+        quote=evidence.quote,
+        comment=evidence.comment,
+    )
+
+
+def _claim_relation_payload(relation: ClaimRelation) -> ClaimRelationResponse:
+    return ClaimRelationResponse.model_validate(relation)
 
 
 def _session_token(request: Request, name: str) -> str:
@@ -688,6 +721,105 @@ def create_app(
         except DocumentNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found") from exc
         return [AnnotationResponse.model_validate(item) for item in annotations]
+
+    @app.post(
+        "/api/claims",
+        response_model=ClaimEvidenceResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_claim(
+        body: ClaimAssertion, service: NotelyService = Depends(get_service)
+    ) -> ClaimEvidenceResponse:
+        try:
+            evidence = await service.create_claim(
+                annotation_id=body.annotation_id, text=body.text, relation=body.relation
+            )
+        except DocumentNotFoundError as exc:
+            # Documento, anotação ou claim de outra conta respondem como inexistente.
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="annotation not found") from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        return _claim_evidence_payload(evidence)
+
+    @app.get("/api/claims", response_model=list[ClaimEvidenceResponse])
+    async def list_claims(
+        service: NotelyService = Depends(get_service),
+    ) -> list[ClaimEvidenceResponse]:
+        entries = await service.list_claim_evidence()
+        return [_claim_evidence_payload(entry) for entry in entries]
+
+    @app.delete("/api/claims/{claim_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_claim(
+        claim_id: UUID, service: NotelyService = Depends(get_service)
+    ) -> None:
+        try:
+            await service.delete_claim(claim_id)
+        except ClaimNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="claim not found") from exc
+
+    @app.post(
+        "/api/questions/{annotation_id}/answers",
+        response_model=ClaimRelationResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def answer_question(
+        annotation_id: UUID,
+        body: AnsweredByRequest,
+        service: NotelyService = Depends(get_service),
+    ) -> ClaimRelationResponse:
+        try:
+            relation = await service.answer_question(
+                question_annotation_id=annotation_id,
+                answer_annotation_id=body.answer_annotation_id,
+            )
+        except AnsweredQuestionNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="question annotation not found"
+            ) from exc
+        except DocumentNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="answer annotation not found"
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        return _claim_relation_payload(relation)
+
+    @app.post(
+        "/api/concept-relations",
+        response_model=ClaimRelationResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def relate_concepts(
+        body: ConceptRelationRequest, service: NotelyService = Depends(get_service)
+    ) -> ClaimRelationResponse:
+        try:
+            relation = await service.relate_concepts(
+                source_concept_id=body.source_concept_id,
+                target_concept_id=body.target_concept_id,
+            )
+        except RelatedConceptNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="concept not found") from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        return _claim_relation_payload(relation)
+
+    @app.delete("/api/claim-relations/{relation_id}", response_model=ClaimRelationResponse)
+    async def delete_claim_relation(
+        relation_id: UUID, service: NotelyService = Depends(get_service)
+    ) -> ClaimRelationResponse:
+        try:
+            relation = await service.delete_claim_relation(relation_id)
+        except ClaimRelationNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="claim relation not found"
+            ) from exc
+        return _claim_relation_payload(relation)
 
     @app.get(
         "/api/study-sessions/{session_id}/questions/{annotation_id}/sources",

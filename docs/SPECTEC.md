@@ -1048,8 +1048,12 @@ Entregue parcialmente: worker de `reader_events` em TimescaleDB, sessões de lei
 ([ADR 0003](adr/0003-age-graph-projection.md)); a extração de conceitos por provider, com
 nós `Concept` e arestas `REFERS_TO`/`QUESTIONS` marcadas como inferência, entrou na
 migration `0010` e no worker de conceitos ([ADR 0005](adr/0005-concept-extraction-as-inference.md)).
-Nós de `Claim` e as arestas `SUPPORTS`/`CONTRADICTS`/`RELATED_TO`/`ANSWERED_BY` seguem
-pendentes, assim como pgvector.
+Afirmações autorais e as arestas `SUPPORTS`/`CONTRADICTS`/`RELATED_TO`/`ANSWERED_BY`
+entraram na migration `0015`, nas rotas de `/api/claims` e na projeção do worker de grafo,
+com proveniência `user_authored` distinguível da inferência
+([ADR 0008](adr/0008-claims-and-semantic-edges.md)). A interface no Reader para afirmar,
+listar e remover afirmações, e a sugestão de afirmação por modelo, seguem pendentes, assim
+como pgvector.
 
 ### Fase 3
 

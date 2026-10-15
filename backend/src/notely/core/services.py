@@ -11,18 +11,24 @@ from notely.core.models import (
     Annotation,
     AnnotationSource,
     AnnotationType,
+    Claim,
+    ClaimRelation,
+    ClaimRelationKind,
     CurationRequest,
     CurationStatus,
     Document,
     DocumentBookmark,
     OutboxEvent,
     ReadingSession,
+    RelationProvenance,
+    RelationStatus,
     StudySession,
     StudySessionDocument,
     SuggestionStatus,
     ThemeOrigin,
     utc_now,
 )
+from notely.core.claims import ClaimEvidence, normalize_claim_text
 from notely.core.curation import CurationView, CuratedSourceView
 from notely.core.passage import anchor_from_position, passage_id
 from notely.core.progress import (
@@ -85,6 +91,22 @@ class SuggestionAlreadyResolvedError(Exception):
 
 
 class SessionWithoutDocumentsError(Exception):
+    pass
+
+
+class ClaimNotFoundError(Exception):
+    pass
+
+
+class ClaimRelationNotFoundError(Exception):
+    pass
+
+
+class RelatedConceptNotFoundError(Exception):
+    pass
+
+
+class AnsweredQuestionNotFoundError(Exception):
     pass
 
 
@@ -412,6 +434,188 @@ class NotelyService:
             if await uow.get_document(document_id) is None:
                 raise DocumentNotFoundError(str(document_id))
             return await uow.list_annotations(document_id)
+
+    async def create_claim(
+        self, *, annotation_id: UUID, text: str, relation: ClaimRelationKind
+    ) -> ClaimEvidence:
+        """Afirma algo a partir de uma anotação e liga a evidência à afirmação.
+
+        A afirmação é conhecimento autoral: nasce `user_authored` e `accepted`, porque foi o
+        próprio usuário quem a escreveu. Afirmar o mesmo texto de novo reaproveita a
+        afirmação existente e apenas acrescenta a nova evidência — não duplica conhecimento.
+
+        Anotação de outra conta responde como inexistente: a leitura já é escopada ao dono.
+
+        O evento é publicado apenas para o que nasceu agora. Afirmar de novo o mesmo texto com
+        a mesma evidência é uma repetição idempotente: nada mudou no PostgreSQL, então não há
+        o que projetar. Eventos de fato pontual são deduplicados por agregado + tipo, então
+        publicar de novo seria rejeitado pelo outbox de qualquer forma.
+        """
+        if relation not in (ClaimRelationKind.SUPPORTS, ClaimRelationKind.CONTRADICTS):
+            raise ValueError(
+                "a claim is asserted from an annotation as supports or contradicts"
+            )
+        clean_text = text.strip()
+        if not clean_text:
+            raise ValueError("claim text is required")
+        async with self._uow_factory() as uow:
+            annotation = await uow.get_annotation(annotation_id)
+            if annotation is None:
+                raise DocumentNotFoundError(f"annotation {annotation_id} does not exist")
+            now = utc_now()
+            claim = await uow.upsert_claim(Claim(
+                text=clean_text,
+                normalized_text=normalize_claim_text(clean_text),
+                provenance=RelationProvenance.USER_AUTHORED,
+                status=RelationStatus.ACCEPTED,
+                created_at=now,
+                updated_at=now,
+                accepted_at=now,
+            ))
+            # `created_at` diferente do enviado significa que a linha já existia: o upsert
+            # preserva a data da afirmação original.
+            claim_created = claim.created_at == now
+            # Afirmar é um aceite: a aresta nasce autoral e valendo.
+            candidate = ClaimRelation(
+                relation=relation,
+                provenance=RelationProvenance.USER_AUTHORED,
+                status=RelationStatus.ACCEPTED,
+                annotation_id=annotation_id,
+                claim_id=claim.id,
+                created_at=now,
+                accepted_at=now,
+            )
+            edge = await uow.add_claim_relation(candidate)
+            # O upsert devolve a aresta já existente, com o id dela.
+            edge_created = edge.id == candidate.id
+            if claim_created:
+                await uow.add_outbox_event(_claim_event(claim))
+            if edge_created:
+                # A projeção da aresta garante o nó das duas pontas, então ela alcança o
+                # grafo mesmo quando o nó do Claim vem de uma afirmação anterior.
+                await uow.add_outbox_event(_claim_relation_event(edge, claim_id=claim.id))
+            evidence = await _evidence_for(uow, claim=claim, relation=edge)
+            await uow.commit()
+        return evidence
+
+    async def list_claim_evidence(self) -> list[ClaimEvidence]:
+        """Afirmações do usuário com a evidência que as sustenta, do mais recente ao antigo."""
+        async with self._uow_factory() as uow:
+            entries: list[ClaimEvidence] = []
+            for claim in reversed(await uow.list_claims()):
+                for relation in await uow.list_claim_relations(claim_id=claim.id):
+                    entries.append(await _evidence_for(uow, claim=claim, relation=relation))
+            return entries
+
+    async def delete_claim(self, claim_id: UUID) -> None:
+        """Exclusão suave da afirmação, com a remoção do nó publicada no outbox.
+
+        As arestas saem em cascata no PostgreSQL; o worker de grafo derruba o nó `Claim` e,
+        com ele, as arestas que o citavam.
+        """
+        async with self._uow_factory() as uow:
+            claim = await uow.get_claim(claim_id)
+            if claim is None:
+                raise ClaimNotFoundError(str(claim_id))
+            now = utc_now()
+            await uow.mark_claim_deleted(claim_id, now)
+            await uow.add_outbox_event(
+                OutboxEvent(
+                    aggregate_type="claim",
+                    aggregate_id=claim_id,
+                    event_type="claim.deleted",
+                    event_key=f"claim-deleted:{claim_id}",
+                    payload={"claim_id": str(claim_id)},
+                )
+            )
+            await uow.commit()
+
+    async def answer_question(
+        self, *, question_annotation_id: UUID, answer_annotation_id: UUID
+    ) -> ClaimRelation:
+        """Liga a dúvida à anotação que a responde (`ANSWERED_BY`).
+
+        A origem precisa ser realmente uma dúvida; a resposta é qualquer anotação do mesmo
+        dono. Ambas as pontas são validadas no escopo do usuário.
+        """
+        if question_annotation_id == answer_annotation_id:
+            raise ValueError("an annotation cannot answer itself")
+        async with self._uow_factory() as uow:
+            question = await uow.get_annotation(question_annotation_id)
+            if question is None or question.type is not AnnotationType.QUESTION:
+                raise AnsweredQuestionNotFoundError(str(question_annotation_id))
+            if await uow.get_annotation(answer_annotation_id) is None:
+                raise DocumentNotFoundError(f"annotation {answer_annotation_id} does not exist")
+            now = utc_now()
+            candidate = ClaimRelation(
+                relation=ClaimRelationKind.ANSWERED_BY,
+                provenance=RelationProvenance.USER_AUTHORED,
+                status=RelationStatus.ACCEPTED,
+                question_annotation_id=question_annotation_id,
+                answer_annotation_id=answer_annotation_id,
+                created_at=now,
+                accepted_at=now,
+            )
+            relation = await uow.add_claim_relation(candidate)
+            # Repetir a mesma resposta é idempotente: nada mudou, nada a projetar.
+            if relation.id == candidate.id:
+                await uow.add_outbox_event(_claim_relation_event(relation))
+            await uow.commit()
+        return relation
+
+    async def relate_concepts(
+        self, *, source_concept_id: UUID, target_concept_id: UUID
+    ) -> ClaimRelation:
+        """Associa dois conceitos já visíveis para o usuário (`RELATED_TO`).
+
+        Conceito de outra conta responde como inexistente: a associação só existe entre
+        conceitos do próprio dono.
+        """
+        if source_concept_id == target_concept_id:
+            raise ValueError("a concept cannot be related to itself")
+        async with self._uow_factory() as uow:
+            for concept_id in (source_concept_id, target_concept_id):
+                if await uow.get_concept(concept_id) is None:
+                    raise RelatedConceptNotFoundError(str(concept_id))
+            now = utc_now()
+            candidate = ClaimRelation(
+                relation=ClaimRelationKind.RELATED_TO,
+                provenance=RelationProvenance.USER_AUTHORED,
+                status=RelationStatus.ACCEPTED,
+                source_concept_id=source_concept_id,
+                target_concept_id=target_concept_id,
+                created_at=now,
+                accepted_at=now,
+            )
+            relation = await uow.add_claim_relation(candidate)
+            # Repetir a mesma associação é idempotente: nada mudou, nada a projetar.
+            if relation.id == candidate.id:
+                await uow.add_outbox_event(_claim_relation_event(relation))
+            await uow.commit()
+        return relation
+
+    async def delete_claim_relation(self, relation_id: UUID) -> ClaimRelation:
+        """Remove qualquer aresta semântica. Aresta alheia responde como inexistente.
+
+        A aresta é devolvida porque a remoção no grafo precisa das pontas: o evento carrega
+        os identificadores que identificam o par removido.
+        """
+        async with self._uow_factory() as uow:
+            relation = await uow.get_claim_relation(relation_id)
+            if relation is None:
+                raise ClaimRelationNotFoundError(str(relation_id))
+            await uow.remove_claim_relation(relation_id)
+            await uow.add_outbox_event(
+                OutboxEvent(
+                    aggregate_type="claim_relation",
+                    aggregate_id=relation_id,
+                    event_type="claim.relation.removed",
+                    event_key=f"claim-relation-removed:{relation_id}",
+                    payload=_relation_payload(relation),
+                )
+            )
+            await uow.commit()
+        return relation
 
     async def get_reading_progress(self) -> ReadingProgressSnapshot:
         async with self._uow_factory() as uow:
@@ -792,4 +996,93 @@ def _curation_event(request: CurationRequest) -> OutboxEvent:
             "study_session_id": str(request.study_session_id),
             "version": request.version,
         },
+    )
+
+
+def _claim_event(claim: Claim) -> OutboxEvent:
+    """Evento de projeção do nó `Claim`.
+
+    O payload carrega o que o worker precisa para reconstruir o nó a partir do PostgreSQL: a
+    própria referência e o estado que o grafo exibe. A chave é de fato pontual — o nó é o
+    mesmo, e reprojetá-lo é idempotente por `MERGE`.
+    """
+    return OutboxEvent(
+        aggregate_type="claim",
+        aggregate_id=claim.id,
+        event_type="claim.created",
+        payload={
+            "claim_id": str(claim.id),
+            "provenance": claim.provenance.value,
+            "status": claim.status.value,
+        },
+    )
+
+
+def _claim_relation_event(
+    relation: ClaimRelation, *, claim_id: UUID | None = None
+) -> OutboxEvent:
+    """Evento de projeção de uma aresta semântica.
+
+    As pontas viajam no payload porque são elas que identificam a aresta no grafo: o worker
+    confirma no PostgreSQL que ela ainda existe antes de reprojetar, e o mesmo payload
+    identifica a aresta a remover. `claim_id` é preenchido quando a aresta é criada junto com
+    a afirmação, para a projeção da aresta não depender da ordem das entregas.
+    """
+    return OutboxEvent(
+        aggregate_type="claim_relation",
+        aggregate_id=relation.id,
+        event_type="claim.relation.created",
+        payload=_relation_payload(relation, claim_id=claim_id),
+    )
+
+
+def _relation_payload(
+    relation: ClaimRelation, *, claim_id: UUID | None = None
+) -> dict[str, object]:
+    """Identificadores da aresta. Nenhum deles é dado de conteúdo: é referência de origem.
+
+    `relation_id` viaja junto para que a remoção possa ser logada e depurada sem adivinhar
+    qual aresta o par identifica.
+    """
+    return {
+        "relation_id": str(relation.id),
+        "relation": relation.relation.value,
+        "annotation_id": _optional_id(relation.annotation_id),
+        "claim_id": _optional_id(claim_id if claim_id is not None else relation.claim_id),
+        "question_annotation_id": _optional_id(relation.question_annotation_id),
+        "answer_annotation_id": _optional_id(relation.answer_annotation_id),
+        "source_concept_id": _optional_id(relation.source_concept_id),
+        "target_concept_id": _optional_id(relation.target_concept_id),
+        "provenance": relation.provenance.value,
+        "status": relation.status.value,
+    }
+
+
+def _optional_id(value: UUID | None) -> str | None:
+    return str(value) if value is not None else None
+
+
+async def _evidence_for(
+    uow: UnitOfWork, *, claim: Claim, relation: ClaimRelation
+) -> ClaimEvidence:
+    """Monta a evidência a partir da anotação de origem, quando ela ainda existe.
+
+    O trecho fica vazio se a anotação não existe mais: a afirmação continua sendo do usuário
+    e não desaparece por causa da evidência.
+    """
+    annotation_id = relation.annotation_id or relation.question_annotation_id
+    if annotation_id is None:
+        return ClaimEvidence(claim=claim, relation=relation)
+    annotation = await uow.get_annotation(annotation_id)
+    if annotation is None:
+        return ClaimEvidence(claim=claim, relation=relation)
+    document = await uow.get_document(annotation.document_id)
+    return ClaimEvidence(
+        claim=claim,
+        relation=relation,
+        quote=annotation.quote,
+        comment=annotation.comment,
+        document_id=annotation.document_id,
+        document_title=document.title if document else None,
+        page_number=annotation.page_number,
     )

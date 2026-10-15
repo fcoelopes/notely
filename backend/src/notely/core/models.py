@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from notely.core.passage import PASSAGE_ID_VERSION
@@ -62,16 +62,37 @@ class ConceptRelation(StrEnum):
 
 
 class RelationProvenance(StrEnum):
-    """De onde a relação veio. Inferência nunca se apresenta como autoral."""
+    """De onde a relação veio. Inferência nunca se apresenta como autoral.
+
+    ``USER_CONFIRMED`` é relação **inferida** que o usuário aceitou: quem a produziu foi o
+    modelo, e o aceite só registra que ela passou a valer para ele. ``USER_AUTHORED`` é
+    relação **produzida pelo próprio usuário** — não houve modelo no caminho. As duas
+    chegam juntas ao grafo justamente para que essa diferença não se perca.
+    """
 
     AI_INFERENCE = "ai_inference"
     USER_CONFIRMED = "user_confirmed"
+    USER_AUTHORED = "user_authored"
 
 
 class RelationStatus(StrEnum):
     SUGGESTED = "suggested"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
+
+
+class ClaimRelationKind(StrEnum):
+    """Arestas semânticas do grafo, nomeadas em caixa baixa como no banco.
+
+    As quatro usam rótulos distintos no AGE (`SUPPORTS`, `CONTRADICTS`, `ANSWERED_BY`,
+    `RELATED_TO`) e pontas diferentes: as duas primeiras ligam anotação → afirmação, a
+    terceira liga dúvida → anotação e a última liga conceito ↔ conceito.
+    """
+
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    ANSWERED_BY = "answered_by"
+    RELATED_TO = "related_to"
 
 
 class SessionStage(StrEnum):
@@ -357,6 +378,154 @@ class AnnotationConcept:
             raise ValueError("confidence must be between 0 and 1")
         if (self.status is RelationStatus.ACCEPTED) != (self.accepted_at is not None):
             raise ValueError("accepted_at must be set only for accepted relations")
+
+
+@dataclass(frozen=True, slots=True)
+class Claim:
+    """Afirmação do leitor: a proposição que ele sustenta a partir do que leu.
+
+    Conhecimento autoral, com proveniência autoral por padrão. Uma sugestão de modelo entra
+    como `ai_inference` e só se torna autoral por aceite explícito (AGENTS.md §1); o serviço
+    que atende a rota de afirmação grava `accepted` porque foi o usuário quem escreveu.
+
+    A evidência não mora aqui, e sim em `ClaimRelation`: a mesma afirmação pode ser
+    sustentada por vários trechos. ``normalized_text`` é a chave de reaproveitamento —
+    afirmar o mesmo texto duas vezes reaproveita a afirmação. Ela não é derivada aqui: quem
+    normaliza é `notely.core.claims.normalize_claim_text`.
+    """
+
+    text: str
+    normalized_text: str
+    provenance: RelationProvenance = RelationProvenance.USER_AUTHORED
+    # Espelha `AnnotationConcept`: o estado inicial é sugerido e o aceite é um ato
+    # separado, que grava `accepted_at`. Afirmar pela API é um aceite explícito.
+    status: RelationStatus = RelationStatus.SUGGESTED
+    provider: str | None = None
+    model: str | None = None
+    confidence: float | None = None
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utc_now)
+    updated_at: datetime = field(default_factory=utc_now)
+    accepted_at: datetime | None = None
+    deleted_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not self.text.strip():
+            raise ValueError("claim text is required")
+        if not self.normalized_text.strip():
+            raise ValueError("claim normalized_text is required")
+        if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        _require_inference_source(self.provenance, self.provider, self.model, "claim")
+        if (self.status is RelationStatus.ACCEPTED) != (self.accepted_at is not None):
+            raise ValueError("accepted_at must be set only for accepted claims")
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimRelation:
+    """Aresta semântica, tipada por `relation` e com chaves estrangeiras reais por ponta.
+
+    Cada relação usa exatamente um par de pontas, como os CHECKs do banco exigem:
+    `supports`/`contradicts` usam `annotation_id` → `claim_id`, `answered_by` usa
+    `question_annotation_id` → `answer_annotation_id` e `related_to` usa
+    `source_concept_id` ↔ `target_concept_id`.
+
+    ``question_annotation_id`` é o mesmo campo de ponta usado por `ANSWERED_BY`; ele não
+    aparece nas demais relações. As pontas não são validadas contra o banco aqui — quem faz
+    isso é o serviço, que confirma que a anotação, a afirmação ou o conceito existem **e
+    pertencem ao dono da unidade de trabalho**.
+    """
+
+    relation: ClaimRelationKind
+    provenance: RelationProvenance = RelationProvenance.USER_AUTHORED
+    status: RelationStatus = RelationStatus.SUGGESTED
+    annotation_id: UUID | None = None
+    claim_id: UUID | None = None
+    question_annotation_id: UUID | None = None
+    answer_annotation_id: UUID | None = None
+    source_concept_id: UUID | None = None
+    target_concept_id: UUID | None = None
+    provider: str | None = None
+    model: str | None = None
+    confidence: float | None = None
+    id: UUID = field(default_factory=uuid4)
+    created_at: datetime = field(default_factory=utc_now)
+    accepted_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        endpoints = _endpoints(self)
+        if len(endpoints) != 2:
+            raise ValueError("a claim relation needs exactly two endpoints")
+        if self.relation in (ClaimRelationKind.SUPPORTS, ClaimRelationKind.CONTRADICTS):
+            if self.annotation_id is None or self.claim_id is None:
+                raise ValueError(f"{self.relation.value} requires annotation_id and claim_id")
+        elif self.relation is ClaimRelationKind.ANSWERED_BY:
+            if self.question_annotation_id is None or self.answer_annotation_id is None:
+                raise ValueError(
+                    "answered_by requires question_annotation_id and answer_annotation_id"
+                )
+        elif self.relation is ClaimRelationKind.RELATED_TO:
+            if self.source_concept_id is None or self.target_concept_id is None:
+                raise ValueError("related_to requires source_concept_id and target_concept_id")
+        if self.question_annotation_id is not None and (
+            self.question_annotation_id == self.answer_annotation_id
+        ):
+            raise ValueError("a question cannot answer itself")
+        if self.source_concept_id is not None and self.source_concept_id == self.target_concept_id:
+            raise ValueError("a concept cannot be related to itself")
+        if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
+        _require_inference_source(self.provenance, self.provider, self.model, "claim relation")
+        if (self.status is RelationStatus.ACCEPTED) != (self.accepted_at is not None):
+            raise ValueError("accepted_at must be set only for accepted relations")
+
+
+class _EndpointCarrier(Protocol):
+    """Só as pontas, para as checagens compartilhadas das arestas."""
+
+    annotation_id: UUID | None
+    claim_id: UUID | None
+    question_annotation_id: UUID | None
+    answer_annotation_id: UUID | None
+    source_concept_id: UUID | None
+    target_concept_id: UUID | None
+
+
+def _endpoints(relation: _EndpointCarrier) -> list[UUID]:
+    """As pontas preenchidas, na ordem das colunas — o banco exige exatamente duas."""
+    return [
+        value
+        for value in (
+            relation.annotation_id,
+            relation.claim_id,
+            relation.question_annotation_id,
+            relation.answer_annotation_id,
+            relation.source_concept_id,
+            relation.target_concept_id,
+        )
+        if value is not None
+    ]
+
+
+def _require_inference_source(
+    provenance: RelationProvenance, provider: str | None, model: str | None, label: str
+) -> None:
+    """Reproduz o CHECK `*_inference_source`: inferência registra quem inferiu.
+
+    O caminho inverso também vale: registro autoral não carrega provedor nem modelo, porque
+    não houve modelo — aceitar um `provider` ali seria provenance ambígua no grafo.
+    """
+    if provenance is RelationProvenance.AI_INFERENCE:
+        for name, value in (("provider", provider), ("model", model)):
+            if value is None or not value.strip():
+                raise ValueError(f"{name} is required for an inferred {label}")
+        return
+    if provider is not None or model is not None:
+        raise ValueError(f"provider and model are only set for an inferred {label}")
 
 
 @dataclass(frozen=True, slots=True)

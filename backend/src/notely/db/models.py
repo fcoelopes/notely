@@ -9,11 +9,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     SmallInteger,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -347,6 +349,80 @@ class AnnotationConceptRow(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ClaimRow(OwnedRow, Base):
+    """Afirmação do leitor. A evidência vive em `claim_relations`, não aqui.
+
+    A unicidade é parcial (`(user_id, normalized_text) WHERE deleted_at IS NULL`): a
+    exclusão é suave, então reaproveitar a afirmação só considera o que não foi removido.
+    O índice existe no SQL da migration `0015` e é declarado aqui para que o upsert tenha
+    o alvo certo de `ON CONFLICT`.
+    """
+
+    __tablename__ = "claims"
+    __table_args__ = (
+        Index(
+            "claims_user_normalized_idx",
+            "user_id",
+            "normalized_text",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_text: Mapped[str] = mapped_column(Text, nullable=False)
+    provenance: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str | None] = mapped_column(Text)
+    model: Mapped[str | None] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ClaimRelationRow(OwnedRow, Base):
+    """Aresta semântica com pontas tipadas e chave estrangeira real em cada uma.
+
+    Uma tabela para as quatro relações: as colunas que a relação não usa ficam nulas, e o
+    `UNIQUE NULLS NOT DISTINCT` sobre o par ordenado dá idempotência a repetir a mesma
+    aresta. Sem `__table_args__` de unicidade aqui porque a restrição usa `NULLS NOT
+    DISTINCT`, que o SQL da migration expressa melhor do que a DSL.
+    """
+
+    __tablename__ = "claim_relations"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    relation: Mapped[str] = mapped_column(Text, nullable=False)
+    annotation_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("annotations.id", ondelete="CASCADE")
+    )
+    claim_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("claims.id", ondelete="CASCADE")
+    )
+    question_annotation_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("annotations.id", ondelete="CASCADE")
+    )
+    answer_annotation_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("annotations.id", ondelete="CASCADE")
+    )
+    source_concept_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("concepts.id", ondelete="CASCADE")
+    )
+    target_concept_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("concepts.id", ondelete="CASCADE")
+    )
+    provenance: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str | None] = mapped_column(Text)
+    model: Mapped[str | None] = mapped_column(Text)
     confidence: Mapped[float | None] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

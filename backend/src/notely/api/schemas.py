@@ -10,14 +10,18 @@ from notely.core.models import (
     AIModelProvider,
     AnnotationSource,
     AnnotationType,
+    ClaimRelationKind,
     CurationStatus,
     AuthorType,
+    RelationProvenance,
+    RelationStatus,
     SessionStage,
     SuggestionStatus,
     ThemeOrigin,
 )
 
 MAX_THEME_LENGTH = 200
+MAX_CLAIM_LENGTH = 2000
 
 
 class DocumentCreate(BaseModel):
@@ -295,3 +299,73 @@ class AssistantAnswerResponse(BaseModel):
     model: str
     grounded: bool
     sources: list[AssistantSourceResponse]
+
+
+class ClaimAssertion(BaseModel):
+    """Afirmação a partir de uma anotação: o trecho sustenta ou contradiz o que se afirma."""
+
+    annotation_id: UUID
+    text: str = Field(min_length=1, max_length=MAX_CLAIM_LENGTH)
+    relation: ClaimRelationKind = ClaimRelationKind.SUPPORTS
+
+
+class ClaimResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    text: str
+    normalized_text: str
+    provenance: RelationProvenance
+    status: RelationStatus
+    provider: str | None
+    model: str | None
+    confidence: float | None
+    created_at: datetime
+    updated_at: datetime
+    accepted_at: datetime | None
+
+
+class ClaimEvidenceResponse(BaseModel):
+    """Afirmação com a evidência que a sustenta.
+
+    `relation` é a aresta que liga o trecho à afirmação, com proveniência e status; o trecho
+    vem vazio quando a anotação de origem não existe mais no acervo.
+    """
+
+    claim: ClaimResponse
+    relation: ClaimRelationKind
+    relation_id: UUID
+    relation_provenance: RelationProvenance
+    relation_status: RelationStatus
+    annotation_id: UUID | None
+    document_id: UUID | None
+    document_title: str | None
+    page_number: int | None
+    quote: str
+    comment: str | None
+
+
+class ClaimRelationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    relation: ClaimRelationKind
+    provenance: RelationProvenance
+    status: RelationStatus
+    annotation_id: UUID | None
+    claim_id: UUID | None
+    question_annotation_id: UUID | None
+    answer_annotation_id: UUID | None
+    source_concept_id: UUID | None
+    target_concept_id: UUID | None
+    created_at: datetime
+    accepted_at: datetime | None
+
+
+class AnsweredByRequest(BaseModel):
+    answer_annotation_id: UUID
+
+
+class ConceptRelationRequest(BaseModel):
+    source_concept_id: UUID
+    target_concept_id: UUID

@@ -55,6 +55,12 @@ DOWNGRADE_GUARDS: dict[str, tuple[tuple[str, ...], tuple[tuple[str, str], ...]]]
     "0014": (("document_bookmarks",), (
         ("document bookmarks", "SELECT EXISTS (SELECT 1 FROM document_bookmarks)"),
     )),
+    # Afirmação e aresta autorais são conhecimento do usuário: não são reconstruíveis a partir
+    # de nada, então um downgrade não pode descartá-las.
+    "0015": (("claims", "claim_relations"), (
+        ("user claims", "SELECT EXISTS (SELECT 1 FROM claims WHERE provenance = 'user_authored')"),
+        ("user relations", "SELECT EXISTS (SELECT 1 FROM claim_relations WHERE provenance = 'user_authored')"),
+    )),
 }
 
 

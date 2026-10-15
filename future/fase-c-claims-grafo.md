@@ -1,6 +1,6 @@
 # Plano de implementação — fase C: afirmações e arestas semânticas no grafo
 
-**Estado:** implementado; aguardando revisão
+**Estado:** implementado, revisado por auditoria independente e na `main` (`f842a58` e as correções de `6c41f6d`). O recurso **ainda não foi usado fora dos testes**: a tabela `claims` está vazia na base real, porque falta a interface que permitiria afirmar pela leitura.
 
 **Issue:** [#21 — Afirmações e arestas semânticas no grafo (fase C)](https://github.com/fcoelopes/notely/issues/21)
 
@@ -133,7 +133,7 @@ apagado do banco, como exige o AGENTS.md §14.
 
 ## Validação da implementação
 
-- Suíte do backend: `196 passed, 5 warnings in 89.23s` (`pytest` contra `notely_test` em `0015`), 24 testes novos em relação aos 172 anteriores — 23 desta entrega e 1 de rollback. As 5 advertências são antigas (`DeprecationWarning` do alembic e `PytestReturnNotNoneWarning` em `test_api_auth.py`), e nenhum teste anterior deixou de passar.
+- Suíte do backend: `196 passed, 5 warnings in 89.23s` (`pytest` contra `notely_test` em `0015`), 24 testes novos em relação aos 172 anteriores — 23 desta entrega e 1 de rollback. As 5 advertências são antigas (`DeprecationWarning` do alembic e `PytestReturnNotNoneWarning` em `test_api_auth.py`), e nenhum teste anterior deixou de passar. Depois das correções da revisão a suíte fechou em `199` testes, verde em banco isolado.
 - Integração do pipeline de afirmações (`backend/tests/test_integration_claims.py`, 14 testes, PostgreSQL real + AGE): persistência autoral e projeção do nó e da aresta; reaproveitamento ao afirmar o mesmo texto com outra caixa e espaçamento; `CONTRADICTS` como aresta distinta; `ANSWERED_BY` entre dúvida e resposta; `RELATED_TO` entre dois conceitos do dono; idempotência sob reprocessamento das mesmas entregas; `--rebuild` reproduzindo nó e as quatro arestas e ignorando afirmação removida; remoção limpando nó e arestas; remoção de aresta preservando os nós; falha do worker preservando a afirmação com a entrega em backoff; e documento, anotação, conceito, afirmação e aresta de outra conta respondendo como inexistentes pelas rotas.
 - Domínio sem banco (`backend/tests/test_claims.py`, 9 testes): normalização, exigência de `provider`/`model` só em inferência, `accepted_at` amarrado ao status, exatamente duas pontas por relação, pontas certas por tipo, extremos distintos e as três proveniências distinguíveis.
 - Critérios de aceite verificados por leitura do grafo, não só por contagem: o nó `Claim` é conferido com `source_id`, `text`, `provenance` e `status`, e as arestas com `provenance` e `status` — nada existe apenas no AGE.

@@ -13,7 +13,7 @@ Extrair conceitos das anotações do usuário com um modelo plugável e projetá
 - Conceitos extraídos entram no grafo **marcados como inferência** (`ai_inference`), sempre distinguíveis do conhecimento autoral.
 - A promoção de uma relação sugerida a relação autoral exige **aceite explícito**; nada é aceito automaticamente (AGENTS.md §1).
 - Escopo desta entrega: nós `Concept` e arestas `REFERS_TO` (anotação → conceito) e `QUESTIONS` (dúvida → conceito). Nós `Claim` e as arestas `SUPPORTS`/`CONTRADICTS`/`RELATED_TO`/`ANSWERED_BY` ficam para uma entrega seguinte.
-- Provider plugável com chave do próprio usuário (BYOK), como já ocorre no provider de tema.
+- Provider plugável, escolhido por configuração do **servidor** (`NOTELY_CONCEPT_PROVIDER`, `NOTELY_CONCEPT_MODEL`, `NOTELY_CONCEPT_API_KEY`, `NOTELY_CONCEPT_ENDPOINT`). Não é BYOK: a chave que o usuário cadastra no assistente não alimenta esta extração, e a sugestão de tema também é configurada por ambiente.
 
 ## Camada de provider
 
@@ -78,7 +78,7 @@ O worker de grafo permanece o único escritor no AGE, mantendo a projeção deri
 
 ## Limitações conhecidas
 
-- O extrator heurístico é local e gratuito, mas a qualidade é limitada: ele ranqueia termos por frequência e não distingue conceito de verbo comum. A qualidade vem de configurar um provider de modelo (BYOK); o heurístico existe para manter o fluxo utilizável offline e testável.
+- O extrator heurístico é local e gratuito, mas a qualidade é limitada: ele ranqueia termos por frequência e não distingue conceito de verbo comum — na base real apareceram coisas como `natureza` e `afeta`. A qualidade vem de configurar um provider de modelo por variável de ambiente do servidor; o heurístico existe para manter o fluxo utilizável offline e testável.
 - Reextrair com outro provider republica o evento de projeção, mas o grafo é atualizado de forma aditiva: arestas antigas da mesma anotação permanecem até um `--rebuild`, que reconcilia o grafo com o PostgreSQL.
 - Não há agrupamento semântico: "ativos", "assets" e "ativo" são conceitos distintos. A fusão por similaridade depende de pgvector, que segue pendente.
 - A interface de aceite/rejeição não existe nesta entrega; o estado está persistido e é consultável.

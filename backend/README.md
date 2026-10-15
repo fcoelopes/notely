@@ -215,8 +215,9 @@ uv run --project backend python -m notely.workers.concepts
 uv run --project backend python -m notely.workers.concepts --backfill --once
 ```
 
-O provider padrão é determinístico e local (`heuristic`), sem rede. Para usar um modelo
-com a própria chave (BYOK):
+O provider padrão é determinístico e local (`heuristic`), sem rede. Para usar um modelo, a
+configuração é do servidor, por variáveis de ambiente — a chave que o usuário cadastra no
+assistente (`PUT /api/ai-config`) **não** alimenta esta extração, nem a sugestão de tema:
 
 ```bash
 NOTELY_CONCEPT_PROVIDER=anthropic NOTELY_CONCEPT_MODEL=claude-... NOTELY_CONCEPT_API_KEY=... \
@@ -253,7 +254,9 @@ DELETE /api/claim-relations/{relation_id}   remove qualquer aresta semântica
 A API grava a afirmação, a aresta e o evento de outbox **na mesma transação**
 (`claim.created`, `claim.relation.created`, `claim.deleted`, `claim.relation.removed`). O
 worker de grafo continua sendo o único escritor no AGE e projeta o nó `Claim` e as quatro
-arestas a partir do estado do PostgreSQL:
+arestas a partir do estado do PostgreSQL. O mapa das três camadas — afirmações, conceitos e
+associações, com o que é autoral, o que é inferência e o que ainda não tem tela — está em
+[docs/afirmacoes-conceitos-associacoes.md](../docs/afirmacoes-conceitos-associacoes.md):
 
 ```bash
 uv run --project backend python -m notely.workers.graph --once

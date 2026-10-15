@@ -1051,9 +1051,12 @@ migration `0010` e no worker de conceitos ([ADR 0005](adr/0005-concept-extractio
 Afirmações autorais e as arestas `SUPPORTS`/`CONTRADICTS`/`RELATED_TO`/`ANSWERED_BY`
 entraram na migration `0015`, nas rotas de `/api/claims` e na projeção do worker de grafo,
 com proveniência `user_authored` distinguível da inferência
-([ADR 0008](adr/0008-claims-and-semantic-edges.md)). A interface no Reader para afirmar,
-listar e remover afirmações, e a sugestão de afirmação por modelo, seguem pendentes, assim
-como pgvector.
+([ADR 0008](adr/0008-claims-and-semantic-edges.md)). A tela do Reader para afirmar, listar e
+remover afirmações e para associar dois conceitos entrou em seguida, com a leitura
+`GET /api/concepts` que faltava para listá-los. `ANSWERED_BY` existe no domínio, na API e no
+grafo, mas ainda não tem tela. A sugestão de afirmação por modelo e pgvector seguem pendentes.
+O mapa das três camadas — o que é autoral, o que é inferência e o que dá para perguntar — está
+em [afirmações, conceitos e associações](afirmacoes-conceitos-associacoes.md).
 
 ### Fase 3
 

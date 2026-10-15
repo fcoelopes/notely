@@ -1,7 +1,16 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import type { Annotation, DocumentSummary, SessionDocument, StudySessionDetail, ThemeSuggestion } from "./types";
+import { ApiError } from "./lib/api";
+import type {
+  Annotation,
+  ClaimEvidence,
+  ConceptOverview,
+  DocumentSummary,
+  SessionDocument,
+  StudySessionDetail,
+  ThemeSuggestion,
+} from "./types";
 
 interface DocumentProps {
   file: string;
@@ -53,6 +62,12 @@ const api = vi.hoisted(() => ({
   setStudySessionTheme: vi.fn(),
   setDocumentBookmark: vi.fn(),
   uploadDocument: vi.fn(),
+  listClaims: vi.fn(),
+  createClaim: vi.fn(),
+  deleteClaim: vi.fn(),
+  listConcepts: vi.fn(),
+  createConceptRelation: vi.fn(),
+  deleteClaimRelation: vi.fn(),
 }));
 const readPageCount = vi.hoisted(() => vi.fn());
 
@@ -155,6 +170,78 @@ function suggestion(overrides: Partial<ThemeSuggestion> = {}): ThemeSuggestion {
 
 const pageBounds = { left: 0, top: 0, right: 400, bottom: 800, width: 400, height: 800 };
 
+function annotation(documentId: string, overrides: Partial<Annotation> = {}): Annotation {
+  const record: Annotation = {
+    id: `annotation-${savedAnnotations.length + 1}`,
+    document_id: documentId,
+    page_number: 1,
+    type: "highlight",
+    quote: "Trecho",
+    comment: null,
+    position: { version: 1, rects: [], textQuoteSelector: { exact: "Trecho" } },
+    passage_id: "a".repeat(64),
+    passage_id_version: 1,
+    source: "user_selection",
+    author_type: "user",
+    reading_session_id: null,
+    study_session_id: "session-1",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+  savedAnnotations.push(record);
+  return record;
+}
+
+function claimEvidence(overrides: Partial<ClaimEvidence> = {}): ClaimEvidence {
+  return {
+    claim: {
+      id: "claim-1",
+      text: "A materialidade é julgada caso a caso",
+      normalized_text: "a materialidade é julgada caso a caso",
+      provenance: "user_authored",
+      status: "accepted",
+      provider: null,
+      model: null,
+      confidence: null,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      accepted_at: "2026-01-01T00:00:00Z",
+    },
+    relation: "supports",
+    relation_id: "relation-1",
+    relation_provenance: "user_authored",
+    relation_status: "accepted",
+    annotation_id: "annotation-1",
+    document_id: "doc-1",
+    document_title: "Artigo",
+    page_number: 1,
+    quote: "Trecho",
+    comment: null,
+    ...overrides,
+  };
+}
+
+function conceptOverview(overrides: Partial<ConceptOverview> = {}): ConceptOverview {
+  return {
+    id: "concept-1",
+    name: "Materialidade",
+    annotation_count: 2,
+    documents: [{ document_id: "doc-1", document_title: "Artigo", annotation_count: 2 }],
+    associations: [],
+    ...overrides,
+  };
+}
+
+/** Abre um `<details>` da barra lateral pelo texto do resumo. */
+function openSidebarDetails(title: string) {
+  const summary = Array.from(document.querySelectorAll("summary")).find(
+    (node) => node.textContent === title,
+  );
+  if (!summary) throw new Error(`o painel ${title} não está na barra lateral`);
+  fireEvent.click(summary);
+}
+
 function selectQuote(quote = "Trecho") {
   const textNode = document.querySelector(".react-pdf__Page span")?.firstChild as Text;
   const range = document.createRange();
@@ -179,6 +266,10 @@ function selectQuote(quote = "Trecho") {
 
 let currentDetail: StudySessionDetail;
 let titles: Record<string, string>;
+let savedAnnotations: Annotation[];
+let currentClaims: ClaimEvidence[];
+let currentConcepts: ConceptOverview[];
+let relationSequence: number;
 
 async function startSession(
   options: { theme?: string | null; documents?: SessionDocument[]; suggestions?: ThemeSuggestion[]; openPanels?: boolean } = {},
@@ -210,6 +301,10 @@ describe("App", () => {
   beforeEach(() => {
     currentDetail = sessionDetail();
     titles = {};
+    savedAnnotations = [];
+    currentClaims = [];
+    currentConcepts = [];
+    relationSequence = 0;
     Object.values(api).forEach((fn) => fn.mockReset());
     readPageCount.mockReset();
     pdfDocument.props = null;
@@ -231,7 +326,101 @@ describe("App", () => {
       session: { progress: { viewed_pages: 1, total_pages: 4, percent: 25 }, documents: { [documentId]: { viewed_pages: 1, total_pages: 4, percent: 25 } } },
       document_global: { viewed_pages: 1, total_pages: 4, percent: 25 },
     }));
-    api.listAnnotations.mockResolvedValue([]);
+    api.listAnnotations.mockImplementation((documentId: string) =>
+      Promise.resolve(savedAnnotations.filter((item) => item.document_id === documentId)),
+    );
+    // Afirmações e conceitos vêm do servidor já escopados ao dono; aqui o mock só reflete o
+    // que foi gravado, incluindo o reaproveitamento da afirmação de mesmo texto.
+    api.listClaims.mockImplementation(() => Promise.resolve([...currentClaims]));
+    api.createClaim.mockImplementation((input: {
+      annotation_id: string;
+      text: string;
+      relation: "supports" | "contradicts";
+    }) => {
+      const source = savedAnnotations.find((item) => item.id === input.annotation_id) ?? null;
+      const normalized = input.text.trim().replace(/\s+/g, " ").toLowerCase();
+      const already = currentClaims.find(
+        (entry) =>
+          entry.claim.normalized_text === normalized &&
+          entry.annotation_id === input.annotation_id,
+      );
+      if (already) return Promise.resolve(already);
+      const reused = currentClaims.find(
+        (entry) => entry.claim.normalized_text === normalized,
+      );
+      const evidence = claimEvidence({
+        claim: reused
+          ? reused.claim
+          : {
+              ...claimEvidence().claim,
+              id: `claim-${currentClaims.length + 1}`,
+              text: input.text.trim(),
+              normalized_text: normalized,
+            },
+        relation: input.relation,
+        relation_id: `relation-${++relationSequence}`,
+        annotation_id: input.annotation_id,
+        document_id: source?.document_id ?? null,
+        page_number: source?.page_number ?? null,
+        quote: source?.quote ?? "",
+      });
+      currentClaims = [evidence, ...currentClaims];
+      return Promise.resolve(evidence);
+    });
+    api.deleteClaim.mockImplementation((claimId: string) => {
+      currentClaims = currentClaims.filter((entry) => entry.claim.id !== claimId);
+      return Promise.resolve(undefined);
+    });
+    api.listConcepts.mockImplementation(() => Promise.resolve([...currentConcepts]));
+    api.createConceptRelation.mockImplementation((sourceId: string, targetId: string) => {
+      const source = currentConcepts.find((item) => item.id === sourceId);
+      const target = currentConcepts.find((item) => item.id === targetId);
+      const existing = source?.associations.find(
+        (association) => association.outgoing && association.other_concept_id === targetId,
+      );
+      if (existing || !source || !target) {
+        return Promise.resolve({ id: existing?.relation_id ?? "relation-existing" });
+      }
+      const relationId = `relation-${++relationSequence}`;
+      source.associations = [
+        ...source.associations,
+        {
+          relation_id: relationId,
+          source_concept_id: sourceId,
+          target_concept_id: targetId,
+          other_concept_id: targetId,
+          other_concept_name: target.name,
+          outgoing: true,
+          provenance: "user_authored",
+          status: "accepted",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ];
+      target.associations = [
+        ...target.associations,
+        {
+          relation_id: relationId,
+          source_concept_id: sourceId,
+          target_concept_id: targetId,
+          other_concept_id: sourceId,
+          other_concept_name: source.name,
+          outgoing: false,
+          provenance: "user_authored",
+          status: "accepted",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ];
+      return Promise.resolve({ id: relationId });
+    });
+    api.deleteClaimRelation.mockImplementation((relationId: string) => {
+      currentConcepts = currentConcepts.map((concept) => ({
+        ...concept,
+        associations: concept.associations.filter(
+          (association) => association.relation_id !== relationId,
+        ),
+      }));
+      return Promise.resolve({ id: relationId });
+    });
     api.getQuestionSources.mockResolvedValue({
       annotation_id: "annotation-1", study_session_id: "session-1",
       status: "pending", version: 1, last_error: null, sources: [],
@@ -864,5 +1053,339 @@ describe("App", () => {
 
     await waitFor(() => expect(api.logout).toHaveBeenCalled());
     expect(await screen.findByRole("heading", { name: "Notely" })).toBeInTheDocument();
+  });
+
+  it("asserts from an annotated excerpt and lists the claim with its evidence", async () => {
+    const record = annotation("doc-1", { quote: "A materialidade é julgada caso a caso", page_number: 2 });
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0, 5)],
+      openPanels: false,
+    });
+    await screen.findByText("A materialidade é julgada caso a caso");
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 1" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Afirmar a partir deste trecho/ }));
+    fireEvent.change(screen.getByLabelText("Texto da afirmação"), {
+      target: { value: "  A materialidade depende do julgamento profissional  " },
+    });
+    fireEvent.change(screen.getByLabelText("Relação com o trecho"), {
+      target: { value: "contradicts" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar afirmação" }));
+
+    await waitFor(() =>
+      expect(api.createClaim).toHaveBeenCalledWith({
+        annotation_id: record.id,
+        text: "A materialidade depende do julgamento profissional",
+        relation: "contradicts",
+      }),
+    );
+
+    // A afirmação aparece na lista da sessão, com documento, página e trecho.
+    openSidebarDetails("Afirmações");
+    expect(
+      await screen.findByText("A materialidade depende do julgamento profissional"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("contradiz este trecho")).toBeInTheDocument();
+    expect(screen.getByText("Evidência")).toBeInTheDocument();
+    expect(screen.getByText(/página 2/)).toBeInTheDocument();
+    expect(screen.getAllByText("A materialidade é julgada caso a caso").length).toBeGreaterThan(0);
+  });
+
+  it("reuses the claim when the same text is asserted again", async () => {
+    const record = annotation("doc-1", { quote: "Trecho" });
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0)],
+      openPanels: false,
+    });
+    await screen.findByText("Trecho");
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 1" }));
+
+    const assertOnce = async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Afirmar a partir deste trecho/ }));
+      fireEvent.change(screen.getByLabelText("Texto da afirmação"), {
+        target: { value: "A materialidade é julgada caso a caso" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Salvar afirmação" }));
+      await waitFor(() =>
+        expect(api.createClaim).toHaveBeenCalledWith(
+          expect.objectContaining({ annotation_id: record.id }),
+        ),
+      );
+    };
+
+    await assertOnce();
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Texto da afirmação")).not.toBeInTheDocument(),
+    );
+    await assertOnce();
+
+    openSidebarDetails("Afirmações");
+    // Reafirmar o mesmo texto reaproveita a afirmação existente: uma linha, sem erro.
+    await waitFor(() =>
+      expect(screen.getAllByText("A materialidade é julgada caso a caso")).toHaveLength(1),
+    );
+    expect(api.createClaim).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("removes a claim without touching the annotation that was its evidence", async () => {
+    const record = annotation("doc-1", { quote: "Trecho preservado" });
+    currentClaims = [
+      claimEvidence({
+        annotation_id: record.id,
+        document_id: "doc-1",
+        quote: "Trecho preservado",
+        page_number: 1,
+      }),
+    ];
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0)],
+      openPanels: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 1" }));
+
+    openSidebarDetails("Afirmações");
+    const remove = await screen.findByRole("button", {
+      name: /Remover a afirmação A materialidade é julgada caso a caso/,
+    });
+    fireEvent.click(remove);
+
+    await waitFor(() => expect(api.deleteClaim).toHaveBeenCalledWith("claim-1"));
+    await waitFor(() =>
+      expect(
+        screen.queryByText("A materialidade é julgada caso a caso"),
+      ).not.toBeInTheDocument(),
+    );
+    // A anotação que servia de evidência continua no caderno.
+    expect(screen.getByText("Trecho preservado")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Afirmar a partir deste trecho/ })).toBeEnabled();
+  });
+
+  it("marks a claim that lost its evidence instead of hiding it", async () => {
+    currentClaims = [
+      claimEvidence({
+        relation: null,
+        relation_id: null,
+        relation_provenance: null,
+        relation_status: null,
+        annotation_id: null,
+        document_id: null,
+        document_title: null,
+        page_number: null,
+        quote: "",
+      }),
+    ];
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0)],
+      openPanels: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Afirmações");
+
+    expect(await screen.findByText("sem evidência")).toBeInTheDocument();
+    expect(screen.getByText("A materialidade é julgada caso a caso")).toBeInTheDocument();
+  });
+
+  it("shows the failure and keeps reading when asserting fails", async () => {
+    annotation("doc-1", { quote: "Trecho" });
+    api.createClaim.mockRejectedValue(new ApiError(503, "Não foi possível gravar a afirmação."));
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0, 4)],
+      openPanels: false,
+    });
+    await screen.findByText("Trecho");
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 1" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Afirmar a partir deste trecho/ }));
+    fireEvent.change(screen.getByLabelText("Texto da afirmação"), {
+      target: { value: "Uma afirmação que não grava" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar afirmação" }));
+
+    openSidebarDetails("Afirmações");
+    // A falha aparece onde a ação aconteceu e no painel de afirmações.
+    expect(
+      await screen.findByText(
+        "Não foi possível gravar a afirmação. O texto foi mantido para tentar de novo.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    // O rascunho continua onde estava, e a leitura segue funcionando.
+    expect(screen.getByLabelText("Texto da afirmação")).toHaveValue("Uma afirmação que não grava");
+    expect(screen.getByText("Trecho")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
+    expect(api.createClaim).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists only the claims of the documents in the open session", async () => {
+    currentClaims = [
+      claimEvidence({ document_id: "doc-1", document_title: "Artigo" }),
+      claimEvidence({
+        claim: { ...claimEvidence().claim, id: "claim-9", text: "Afirmação de outro documento" },
+        document_id: "doc-9",
+        document_title: "Outro documento",
+      }),
+    ];
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0)],
+      openPanels: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Afirmações");
+
+    expect(await screen.findByText("A materialidade é julgada caso a caso")).toBeInTheDocument();
+    expect(screen.queryByText("Afirmação de outro documento")).not.toBeInTheDocument();
+  });
+
+  it("lists the concepts of the session with their excerpt count and the inference warning", async () => {
+    currentConcepts = [
+      conceptOverview(),
+      conceptOverview({
+        id: "concept-2",
+        name: "Relevância",
+        annotation_count: 1,
+        documents: [
+          { document_id: "doc-9", document_title: "Outro documento", annotation_count: 1 },
+        ],
+      }),
+    ];
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0)],
+      openPanels: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Conceitos e associações");
+
+    expect(await screen.findByText("Materialidade")).toBeInTheDocument();
+    expect(screen.getByText("2 trechos")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Extraídos por modelo ou heurística de frequência/),
+    ).toHaveTextContent("inferência, não conhecimento confirmado");
+    // Conceito de documento fora da sessão não entra na lista.
+    expect(screen.queryByText("Relevância")).not.toBeInTheDocument();
+  });
+
+  it("associates two concepts once and never duplicates the edge", async () => {
+    currentConcepts = [
+      conceptOverview(),
+      conceptOverview({
+        id: "concept-2",
+        name: "Relevância",
+        annotation_count: 1,
+        documents: [{ document_id: "doc-1", document_title: "Artigo", annotation_count: 1 }],
+      }),
+    ];
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0)],
+      openPanels: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Conceitos e associações");
+    await screen.findByText("Materialidade");
+
+    const select = async (name: string) => {
+      const heading = Array.from(
+        document.querySelectorAll(".concept-card .concept-heading strong"),
+      ).find((node) => node.textContent === name);
+      const card = heading?.closest(".concept-card") as HTMLElement;
+      fireEvent.click(within(card).getByRole("button", { name: /^Seleciona/ }));
+    };
+    await select("Materialidade");
+    await select("Relevância");
+
+    expect(screen.getByText(/ordem do par é significativa hoje/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Associar conceitos" }));
+
+    await waitFor(() =>
+      expect(api.createConceptRelation).toHaveBeenCalledWith("concept-1", "concept-2"),
+    );
+    expect(await screen.findByText("Materialidade → Relevância")).toBeInTheDocument();
+
+    // A seleção continua, e o par já associado não é oferecido de novo.
+    expect(
+      await screen.findByText("Estes dois conceitos já estão associados nesta ordem."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Associar conceitos" })).not.toBeInTheDocument();
+
+    // Escolher os dois de novo também não oferece a aresta que já existe.
+    await select("Materialidade");
+    await select("Relevância");
+    await select("Materialidade");
+    await select("Relevância");
+    expect(
+      screen.getByText("Estes dois conceitos já estão associados nesta ordem."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Associar conceitos" })).not.toBeInTheDocument();
+    expect(api.createConceptRelation).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes an association keeping both concepts", async () => {
+    const relation = {
+      relation_id: "relation-7",
+      source_concept_id: "concept-1",
+      target_concept_id: "concept-2",
+      other_concept_id: "concept-2",
+      other_concept_name: "Relevância",
+      outgoing: true,
+      provenance: "user_authored" as const,
+      status: "accepted" as const,
+      created_at: "2026-01-01T00:00:00Z",
+    };
+    currentConcepts = [
+      conceptOverview({ associations: [relation] }),
+      conceptOverview({
+        id: "concept-2",
+        name: "Relevância",
+        annotation_count: 1,
+        documents: [{ document_id: "doc-1", document_title: "Artigo", annotation_count: 1 }],
+        associations: [{ ...relation, outgoing: false, other_concept_id: "concept-1", other_concept_name: "Materialidade" }],
+      }),
+    ];
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0)],
+      openPanels: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Conceitos e associações");
+
+    expect(await screen.findByText("Materialidade → Relevância")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Remover associação" }));
+
+    await waitFor(() => expect(api.deleteClaimRelation).toHaveBeenCalledWith("relation-7"));
+    await waitFor(() =>
+      expect(screen.queryByText("Materialidade → Relevância")).not.toBeInTheDocument(),
+    );
+    // Os conceitos continuam onde estavam.
+    expect(screen.getByText("Materialidade")).toBeInTheDocument();
+    expect(screen.getByText("Relevância")).toBeInTheDocument();
+  });
+
+  it("keeps reading and annotating when the concept list is unavailable", async () => {
+    annotation("doc-1", { quote: "Trecho" });
+    api.listConcepts.mockRejectedValue(new ApiError(503, "Lista de conceitos indisponível."));
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0, 3)],
+      openPanels: false,
+    });
+    await screen.findByText("Trecho");
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 1" }));
+    openSidebarDetails("Conceitos e associações");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Lista de conceitos indisponível.");
+    expect(screen.getByText("Trecho")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
   });
 });

@@ -35,6 +35,9 @@ from notely.api.schemas import (
     ClaimEvidenceResponse,
     ClaimRelationResponse,
     ClaimResponse,
+    ConceptAssociationResponse,
+    ConceptOverviewResponse,
+    ConceptReferenceResponse,
     ConceptRelationRequest,
     CuratedSourceResponse,
     DisableMfaRequest,
@@ -73,6 +76,7 @@ from notely.core.auth import (
     UserNotFoundError,
 )
 from notely.core.claims import ClaimEvidence
+from notely.core.concepts import ConceptOverview
 from notely.core.identity import IdentityError
 from notely.core.ingestion import (
     DocumentIngestionService,
@@ -287,6 +291,41 @@ def _claim_evidence_payload(evidence: ClaimEvidence) -> ClaimEvidenceResponse:
 
 def _claim_relation_payload(relation: ClaimRelation) -> ClaimRelationResponse:
     return ClaimRelationResponse.model_validate(relation)
+
+
+def _concept_overview_payload(overview: ConceptOverview) -> ConceptOverviewResponse:
+    """Traduz o conceito para a leitura da tela: contagem, documentos e associações.
+
+    O conceito continua sendo inferência; o que a resposta acrescenta é o lastro (quantos
+    trechos e em quais documentos) e as associações que já existem.
+    """
+    return ConceptOverviewResponse(
+        id=overview.concept.id,
+        name=overview.concept.name,
+        annotation_count=overview.annotation_count,
+        documents=[
+            ConceptReferenceResponse(
+                document_id=reference.document_id,
+                document_title=reference.document_title,
+                annotation_count=reference.annotation_count,
+            )
+            for reference in overview.documents
+        ],
+        associations=[
+            ConceptAssociationResponse(
+                relation_id=association.relation.id,
+                source_concept_id=association.relation.source_concept_id,
+                target_concept_id=association.relation.target_concept_id,
+                other_concept_id=association.other_concept_id,
+                other_concept_name=association.other_concept_name,
+                outgoing=association.outgoing,
+                provenance=association.relation.provenance,
+                status=association.relation.status,
+                created_at=association.relation.created_at,
+            )
+            for association in overview.associations
+        ],
+    )
 
 
 def _session_token(request: Request, name: str) -> str:
@@ -792,6 +831,14 @@ def create_app(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
             ) from exc
         return _claim_relation_payload(relation)
+
+    @app.get("/api/concepts", response_model=list[ConceptOverviewResponse])
+    async def list_concepts(
+        service: NotelyService = Depends(get_service),
+    ) -> list[ConceptOverviewResponse]:
+        """Conceitos do dono com contagem de trechos, documentos e associações existentes."""
+        overviews = await service.list_concept_overviews()
+        return [_concept_overview_payload(item) for item in overviews]
 
     @app.post(
         "/api/concept-relations",

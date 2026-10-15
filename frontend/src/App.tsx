@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import { AnnotationPanel } from "./components/AnnotationPanel";
+import { ClaimPanel } from "./components/ClaimPanel";
 import { CommentComposer } from "./components/CommentComposer";
+import { ConceptPanel } from "./components/ConceptPanel";
 import { DocumentTabs } from "./components/DocumentTabs";
 import { LoginScreen } from "./components/LoginScreen";
 import { SelectionToolbar } from "./components/SelectionToolbar";
@@ -13,7 +15,11 @@ import {
   acceptThemeSuggestion,
   attachDocumentToSession,
   createAnnotation,
+  createClaim,
+  createConceptRelation,
   createStudySession,
+  deleteClaim,
+  deleteClaimRelation,
   deleteDocumentBookmark,
   currentAccount,
   detachDocumentFromSession,
@@ -21,6 +27,8 @@ import {
   getStudySession,
   getReadingProgress,
   listAnnotations,
+  listClaims,
+  listConcepts,
   listDocuments,
   listDocumentBookmarks,
   listStudySessions,
@@ -40,6 +48,9 @@ import type {
   Account,
   Annotation,
   AnnotationType,
+  ClaimEvidence,
+  ClaimEvidenceRelation,
+  ConceptOverview,
   DocumentSummary,
   DocumentBookmark,
   ReadingProgressSnapshot,
@@ -60,6 +71,12 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
   const [bookmarksByDocument, setBookmarksByDocument] = useState<Record<string, DocumentBookmark>>({});
   const [bookmarkBusy, setBookmarkBusy] = useState(false);
   const [session, setSession] = useState<StudySessionDetail | null>(null);
+  const [claims, setClaims] = useState<ClaimEvidence[]>([]);
+  const [concepts, setConcepts] = useState<ConceptOverview[]>([]);
+  const [claimsError, setClaimsError] = useState<string | null>(null);
+  const [conceptsError, setConceptsError] = useState<string | null>(null);
+  const [claimsBusy, setClaimsBusy] = useState(false);
+  const [conceptsBusy, setConceptsBusy] = useState(false);
   const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null);
   const [localUrls, setLocalUrls] = useState<Record<string, string>>({});
   const [annotationsByDocument, setAnnotationsByDocument] = useState<Record<string, Annotation[]>>({});
@@ -183,6 +200,29 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
     [documents, session],
   );
 
+  const sessionDocumentIds = useMemo(
+    () => (session?.documents ?? []).map((document) => document.document_id),
+    [session],
+  );
+
+  // Afirmações das obras da sessão. A afirmação sem evidência não tem documento para
+  // filtrar, e continua listada: o domínio garante que ela segue sendo do usuário.
+  const sessionClaims = useMemo(
+    () =>
+      claims.filter(
+        (entry) =>
+          entry.document_id === null || sessionDocumentIds.includes(entry.document_id),
+      ),
+    [claims, sessionDocumentIds],
+  );
+
+  const sessionConcepts = useMemo(() => {
+    const inSession = new Set(sessionDocumentIds);
+    return concepts.filter((concept) =>
+      concept.documents.some((document) => inSession.has(document.document_id)),
+    );
+  }, [concepts, sessionDocumentIds]);
+
   const loadAnnotations = useCallback(async (documentId: string) => {
     if (loadedAnnotations.current.has(documentId)) return;
     loadedAnnotations.current.add(documentId);
@@ -192,6 +232,28 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
     } catch (caught) {
       loadedAnnotations.current.delete(documentId);
       setError(describeError(caught));
+    }
+  }, []);
+
+  /**
+   * Afirmações e conceitos são leitura auxiliar da sessão: falhar aqui vira mensagem no
+   * painel, e nunca impede ler, navegar ou anotar.
+   */
+  const refreshClaims = useCallback(async () => {
+    try {
+      setClaims(await listClaims());
+      setClaimsError(null);
+    } catch (caught) {
+      setClaimsError(describeError(caught));
+    }
+  }, []);
+
+  const refreshConcepts = useCallback(async () => {
+    try {
+      setConcepts(await listConcepts());
+      setConceptsError(null);
+    } catch (caught) {
+      setConceptsError(describeError(caught));
     }
   }, []);
 
@@ -223,6 +285,8 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
         ])));
         setSession(detail);
         void refreshProgress();
+        void refreshClaims();
+        void refreshConcepts();
         const first = detail.documents[0]?.document_id ?? null;
         setActiveDocumentId(first);
         if (first) await loadAnnotations(first);
@@ -232,7 +296,7 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
         setBusy(false);
       }
     },
-    [bookmarksByDocument, loadAnnotations, refreshProgress],
+    [bookmarksByDocument, loadAnnotations, refreshClaims, refreshConcepts, refreshProgress],
   );
 
   const handlePageRendered = useCallback((sessionId: string, documentId: string, viewedPage: number) => {
@@ -417,8 +481,85 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
     setActiveDocumentId(null);
     setSelection(null);
     setComposing(null);
+    setClaims([]);
+    setConcepts([]);
+    setClaimsError(null);
+    setConceptsError(null);
     void refreshLibrary();
   }, [reading, refreshLibrary]);
+
+  /**
+   * Afirmar a partir de um trecho. O estado local só muda depois do sucesso, como no
+   * marcador de página: a lista é recarregada do servidor, e afirmar o mesmo texto de novo
+   * reaproveita a afirmação existente em vez de duplicar.
+   */
+  const handleAssertClaim = useCallback(
+    async (
+      annotationId: string,
+      text: string,
+      relation: ClaimEvidenceRelation,
+    ): Promise<boolean> => {
+      setClaimsBusy(true);
+      setClaimsError(null);
+      try {
+        await createClaim({ annotation_id: annotationId, text, relation });
+        await refreshClaims();
+        return true;
+      } catch (caught) {
+        setClaimsError(describeError(caught));
+        return false;
+      } finally {
+        setClaimsBusy(false);
+      }
+    },
+    [refreshClaims],
+  );
+
+  const handleRemoveClaim = useCallback(async (claimId: string) => {
+    setClaimsBusy(true);
+    setClaimsError(null);
+    try {
+      // A remoção é suave no domínio e não toca a anotação que servia de evidência.
+      await deleteClaim(claimId);
+      setClaims((current) => current.filter((entry) => entry.claim.id !== claimId));
+    } catch (caught) {
+      setClaimsError(describeError(caught));
+    } finally {
+      setClaimsBusy(false);
+    }
+  }, []);
+
+  const handleRelateConcepts = useCallback(
+    async (sourceConceptId: string, targetConceptId: string) => {
+      setConceptsBusy(true);
+      setConceptsError(null);
+      try {
+        await createConceptRelation(sourceConceptId, targetConceptId);
+        await refreshConcepts();
+      } catch (caught) {
+        setConceptsError(describeError(caught));
+      } finally {
+        setConceptsBusy(false);
+      }
+    },
+    [refreshConcepts],
+  );
+
+  const handleRemoveConceptRelation = useCallback(
+    async (relationId: string) => {
+      setConceptsBusy(true);
+      setConceptsError(null);
+      try {
+        await deleteClaimRelation(relationId);
+        await refreshConcepts();
+      } catch (caught) {
+        setConceptsError(describeError(caught));
+      } finally {
+        setConceptsBusy(false);
+      }
+    },
+    [refreshConcepts],
+  );
 
   const handleEditTheme = useCallback(
     async (theme: string) => {
@@ -819,8 +960,35 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
               setPageByDocument((current) => ({ ...current, [activeDocumentId]: page }));
               reading.noteActivity(page);
             }}
+            onAssert={handleAssertClaim}
             pageNumber={pageNumber}
           />
+          <details className="session-settings">
+            <summary>Afirmações</summary>
+            <ClaimPanel
+              claims={sessionClaims}
+              busy={claimsBusy}
+              error={claimsError}
+              onReload={() => void refreshClaims()}
+              onRemove={(claimId) => void handleRemoveClaim(claimId)}
+            />
+          </details>
+          <details className="session-settings">
+            <summary>Conceitos e associações</summary>
+            <ConceptPanel
+              concepts={sessionConcepts}
+              documentIds={sessionDocumentIds}
+              busy={conceptsBusy}
+              error={conceptsError}
+              onAssociate={(sourceConceptId, targetConceptId) =>
+                void handleRelateConcepts(sourceConceptId, targetConceptId)
+              }
+              onReload={() => void refreshConcepts()}
+              onRemoveAssociation={(relationId) =>
+                void handleRemoveConceptRelation(relationId)
+              }
+            />
+          </details>
         </aside>
       </div>
     </div>

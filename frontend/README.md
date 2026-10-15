@@ -31,7 +31,9 @@ npm run build
 - sessões de estudo com tema autoral e vários documentos em abas;
 - biblioteca de documentos já ingeridos e download do PDF armazenado, para retomar uma sessão;
 - sugestões de tema de IA como sugestão pendente, com provider e modelo visíveis, aplicadas apenas por aceite explícito do usuário;
-- fontes sugeridas para dúvidas criadas numa sessão, com estado assíncrono, excerto verificável, prévia da página e navegação explícita.
+- fontes sugeridas para dúvidas criadas numa sessão, com estado assíncrono, excerto verificável, prévia da página e navegação explícita;
+- afirmações do leitor a partir de um trecho anotado, com evidência visível, remoção e reafirmação que reaproveita a afirmação existente;
+- conceitos das obras da sessão marcados como inferência, com a contagem de trechos e a associação autoral entre dois deles.
 
 O download autenticado (multi-usuário) do PDF armazenado fica para quando houver escopo por usuário.
 
@@ -93,3 +95,35 @@ O provider padrão do backend é busca lexical local, apresentado como tal.
 O texto da fonte e o motivo da sugestão aparecem separados, com provider e
 modelo visíveis. O painel consulta novamente a API enquanto o estado está
 `pending` e oferece retry após `failed` ou `no_source`.
+
+## Afirmações e associações na sessão (issue #22)
+
+O painel de anotações ganhou a ação **Afirmar** em cada trecho. O formulário pede o texto da
+afirmação e a relação com o trecho — **sustenta** ou **contradiz** — e grava em
+`POST /api/claims`. Afirmar o mesmo texto de novo não duplica nada: o domínio reaproveita a
+afirmação existente e apenas acrescenta a evidência, e a lista reflete isso sem erro.
+
+Os painéis **Afirmações** e **Conceitos e associações** ficam na barra lateral, dentro de
+`<details>` fechados como o painel de tema, para não empurrar a leitura para fora da tela.
+Ambos filtram pelas obras da sessão aberta, usando `document_id` dos documentos da sessão:
+
+- **Afirmações** lista cada afirmação com documento, página e trecho, na ordem em que foram
+  feitas, e cada linha pode ser removida sem afetar a anotação que serviu de evidência. A
+  afirmação que perdeu a evidência continua listada, marcada como **sem evidência**: o
+  domínio garante que ela segue sendo do usuário. O estado vazio orienta o primeiro uso.
+- **Conceitos e associações** lista os conceitos com a contagem de trechos e os documentos da
+  sessão, e diz com todas as letras que eles vêm de extração por modelo ou heurística de
+  frequência — são **inferência**, não conhecimento confirmado. Selecionar dois e associar
+  cria a `RELATED_TO` pelo `POST /api/concept-relations`; a associação já existente na mesma
+  ordem não é oferecida de novo, e a tela avisa que a ordem do par é significativa hoje, de
+  modo que associar invertido cria outra aresta. As associações existentes aparecem uma única
+  vez, com remoção, que não remove os conceitos.
+
+Falha de API em qualquer dessas ações vira mensagem no painel e não bloqueia ler, navegar ou
+anotar: o estado local só muda depois do sucesso, como no marcador de página. Um trecho já
+escrito no formulário de afirmação permanece ali quando a gravação falha.
+
+O backend expõe `GET /api/concepts` para essa tela; nada foi aceito automaticamente, e a
+associação entre dois conceitos é autoral. Ver
+[plano](../future/tela-afirmacoes-reader.md) e
+[issue #22](https://github.com/fcoelopes/notely/issues/22).

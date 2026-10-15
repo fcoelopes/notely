@@ -246,9 +246,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .page-jump { display: flex; gap: 4px; align-items: center; }
 .page-jump input { width: 52px; height: 34px; border: 1px solid var(--line); border-radius: 4px; padding: 4px; font-size: 12px; }
 .page-jump button { height: 34px; border: 1px solid var(--line); border-radius: 4px; background: #fff; cursor: pointer; font-size: 12px; }
-.session-settings { border-bottom: 1px solid var(--line); }
-.session-settings summary { padding: 16px 20px; font-size: 12px; cursor: pointer; color: var(--muted); }
-.session-settings summary:focus-visible { outline: 2px solid var(--sage); outline-offset: -3px; }
+/* Os painéis da barra lateral (tema, afirmações, conceitos) ficam recolhidos em <details>,
+   para não empurrar a leitura para fora da tela. */
+.reader-sidebar > details { border-bottom: 1px solid var(--line); }
+.reader-sidebar > details > summary { padding: 16px 20px; font-size: 12px; cursor: pointer; color: var(--muted); }
+.reader-sidebar > details > summary:focus-visible { outline: 2px solid var(--sage); outline-offset: -3px; }
 .document-meta { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .document-meta > div { display: flex; flex-direction: column; min-width: 0; }
 .document-meta strong { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
@@ -543,3 +545,65 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .app-shell--reading .bookmark-controls { order: 3; flex-basis: 100%; padding-left: 0; border-left: 0; }
   .app-shell--reading .sidebar-toggle { top: 5px; }
 }
+
+/* Afirmar a partir do trecho: a ação fica no caderno, ao lado da anotação que é a evidência. */
+.annotation-actions { display: flex; justify-content: flex-end; padding: 0 14px 12px; }
+.assert-toggle { border: 1px solid var(--line); background: #fff; color: var(--sage); border-radius: 6px; padding: 5px 10px; font-size: 11px; cursor: pointer; }
+.assert-toggle:hover { border-color: var(--sage); }
+.assert-form { margin: 0 14px 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fbfbf9; display: grid; gap: 8px; }
+.assert-form label { display: grid; gap: 4px; font-size: 10px; color: var(--muted); }
+.assert-form textarea { min-height: 60px; resize: vertical; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: #fff; color: var(--ink); font: 400 12px/1.45 "Segoe UI", system-ui, sans-serif; }
+.assert-form select { border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; background: #fff; font-size: 12px; }
+.assert-form small { color: var(--muted); font-size: 10px; line-height: 1.45; }
+.assert-failure { margin: 0; color: #8d3f34; font-size: 10px; line-height: 1.45; }
+.assert-form-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.assert-form-actions button { border-radius: 6px; padding: 6px 12px; font-size: 11px; cursor: pointer; }
+.assert-cancel { border: 1px solid var(--line); background: transparent; color: var(--muted); }
+.assert-save { border: 1px solid var(--sage); background: var(--sage); color: #fff; }
+.assert-save:disabled { opacity: 0.45; cursor: default; }
+
+/* Painéis de afirmações e de conceitos, na barra lateral da sessão. */
+.claim-panel, .concept-panel { padding: 18px 20px 20px; display: grid; gap: 12px; }
+.claim-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.claim-heading .eyebrow { margin: 0; font-size: 9px; }
+.claim-count { display: grid; place-items: center; min-width: 24px; height: 24px; padding: 0 7px; border-radius: 999px; background: var(--sage-light); color: var(--sage); font-size: 11px; }
+.panel-error { display: grid; gap: 6px; margin: 0; padding: 9px 11px; border: 1px solid #e0c3bd; border-radius: 7px; background: #fdf3f1; color: #8d3f34; font-size: 11px; line-height: 1.45; }
+.panel-error button { justify-self: start; border: 1px solid #d8b3ac; border-radius: 6px; background: #fff; color: #8d3f34; padding: 4px 9px; font-size: 11px; cursor: pointer; }
+.panel-empty--compact { padding: 18px 6px 22px; }
+.panel-empty--compact p { font-size: 15px; }
+.claim-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.claim-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fff; display: grid; gap: 7px; }
+.claim-text { margin: 0; font: 400 14px/1.4 Georgia, "Times New Roman", serif; color: var(--ink); overflow-wrap: anywhere; }
+.claim-relation { width: fit-content; border-radius: 4px; padding: 3px 7px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; }
+.claim-relation--supports { background: #e6efe8; color: #315840; }
+.claim-relation--contradicts { background: #f6e4e1; color: #8d3f34; }
+.claim-relation--none { background: #f0eee6; color: #8a7b46; }
+.claim-evidence { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 10px; }
+.claim-evidence span { text-transform: uppercase; letter-spacing: 0.08em; color: #8a9388; }
+.claim-card q { display: block; margin: 0; color: #575950; font: 400 12px/1.4 Georgia, "Times New Roman", serif; quotes: "“" "”"; }
+.claim-evidence-missing { margin: 0; color: #8a7b46; font-size: 10px; line-height: 1.5; }
+.claim-remove { justify-self: start; border: 1px solid var(--line); background: transparent; color: var(--muted); border-radius: 6px; padding: 5px 10px; font-size: 10px; cursor: pointer; }
+.claim-remove:hover:not(:disabled) { border-color: #ad554b; color: #ad554b; }
+.claim-remove:disabled { opacity: 0.5; cursor: wait; }
+
+.concept-warning { margin: 0; padding: 9px 11px; border: 1px solid #e2d3ad; border-radius: 7px; background: #fdf7e6; color: #6c5a2a; font-size: 10px; line-height: 1.5; }
+.concept-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.concept-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: #fff; display: grid; gap: 5px; }
+.concept-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.concept-heading strong { font: 500 14px Georgia, "Times New Roman", serif; overflow-wrap: anywhere; }
+.concept-card small { color: var(--muted); font-size: 10px; }
+.concept-select { border: 1px solid var(--line); background: #fff; color: var(--muted); border-radius: 999px; padding: 4px 10px; font-size: 10px; cursor: pointer; white-space: nowrap; }
+.concept-select.is-selected, .concept-select[aria-pressed="true"] { border-color: var(--sage); background: var(--sage-light); color: var(--sage); }
+.concept-documents { margin: 0; color: #8a9388; font-size: 10px; overflow-wrap: anywhere; }
+.concept-associate { border: 1px solid var(--sage); border-radius: 8px; background: #f4f8f2; padding: 11px 12px; display: grid; gap: 6px; }
+.concept-associate p { margin: 0; font-size: 11px; }
+.concept-associate small { color: var(--muted); font-size: 10px; line-height: 1.45; }
+.concept-already { color: var(--sage); }
+.concept-associate-action { justify-self: start; border: 1px solid var(--sage); background: var(--sage); color: #fff; border-radius: 6px; padding: 6px 12px; font-size: 11px; cursor: pointer; }
+.concept-associate-action:disabled { opacity: 0.5; cursor: wait; }
+.concept-associations { display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
+.concept-associations .eyebrow { margin: 0; font-size: 9px; }
+.concept-associations small { color: var(--muted); font-size: 10px; }
+.concept-associations ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.concept-associations li { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--ink); }
+.concept-associations li > span { overflow-wrap: anywhere; }

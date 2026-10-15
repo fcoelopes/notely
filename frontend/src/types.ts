@@ -188,3 +188,94 @@ export interface ReadingProgressUpdate {
   session: SessionProgress;
   document_global: PageProgress;
 }
+
+/** Como uma evidência se liga a uma afirmação: o trecho sustenta ou contradiz. */
+export type ClaimEvidenceRelation = "supports" | "contradicts";
+
+export type ClaimRelationKind =
+  | ClaimEvidenceRelation
+  | "answered_by"
+  | "related_to";
+
+/** De onde a relação veio. Inferência nunca se apresenta como autoral. */
+export type RelationProvenance = "ai_inference" | "user_confirmed" | "user_authored";
+
+export type RelationStatus = "suggested" | "accepted" | "rejected";
+
+export interface Claim {
+  id: string;
+  text: string;
+  normalized_text: string;
+  provenance: RelationProvenance;
+  status: RelationStatus;
+  provider: string | null;
+  model: string | null;
+  confidence: number | null;
+  created_at: string;
+  updated_at: string;
+  accepted_at: string | null;
+}
+
+/**
+ * Afirmação com a evidência que a sustenta. `relation` é nula quando a afirmação ficou sem
+ * evidência: o dado autoral continua sendo do usuário e não sai da lista por isso.
+ */
+export interface ClaimEvidence {
+  claim: Claim;
+  relation: ClaimEvidenceRelation | null;
+  relation_id: string | null;
+  relation_provenance: RelationProvenance | null;
+  relation_status: RelationStatus | null;
+  annotation_id: string | null;
+  document_id: string | null;
+  document_title: string | null;
+  page_number: number | null;
+  quote: string;
+  comment: string | null;
+}
+
+export interface ClaimRelationRecord {
+  id: string;
+  relation: ClaimRelationKind;
+  provenance: RelationProvenance;
+  status: RelationStatus;
+  annotation_id: string | null;
+  claim_id: string | null;
+  question_annotation_id: string | null;
+  answer_annotation_id: string | null;
+  source_concept_id: string | null;
+  target_concept_id: string | null;
+  created_at: string;
+  accepted_at: string | null;
+}
+
+export interface ConceptReference {
+  document_id: string;
+  document_title: string;
+  annotation_count: number;
+}
+
+/** Associação `RELATED_TO` vista de uma das pontas. O par é ordenado. */
+export interface ConceptAssociation {
+  relation_id: string;
+  source_concept_id: string;
+  target_concept_id: string;
+  other_concept_id: string;
+  other_concept_name: string;
+  outgoing: boolean;
+  provenance: RelationProvenance;
+  status: RelationStatus;
+  created_at: string;
+}
+
+/**
+ * Conceito extraído por modelo ou heurística: inferência, não conhecimento confirmado.
+ * A contagem e os documentos são o lastro que a pessoa tem para decidir uma associação.
+ */
+export interface ConceptOverview {
+  id: string;
+  name: string;
+  annotation_count: number;
+  documents: ConceptReference[];
+  associations: ConceptAssociation[];
+}

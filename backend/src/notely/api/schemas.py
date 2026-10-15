@@ -371,3 +371,45 @@ class AnsweredByRequest(BaseModel):
 class ConceptRelationRequest(BaseModel):
     source_concept_id: UUID
     target_concept_id: UUID
+
+
+class ConceptReferenceResponse(BaseModel):
+    """Documento cujo acervo cita o conceito, com quantos trechos o citam ali."""
+
+    document_id: UUID
+    document_title: str
+    annotation_count: int
+
+
+class ConceptAssociationResponse(BaseModel):
+    """Associação `RELATED_TO` vista de uma das pontas.
+
+    O par é ordenado no banco: `outgoing` diz se o conceito listado é a origem da aresta, e
+    associar na ordem inversa cria outra aresta. A proveniência e o status vêm junto para que
+    a tela não apresente como autoral o que não é.
+    """
+
+    relation_id: UUID
+    source_concept_id: UUID
+    target_concept_id: UUID
+    other_concept_id: UUID
+    other_concept_name: str
+    outgoing: bool
+    provenance: RelationProvenance
+    status: RelationStatus
+    created_at: datetime
+
+
+class ConceptOverviewResponse(BaseModel):
+    """Conceito extraído por modelo ou heurística: inferência, não conhecimento confirmado.
+
+    `annotation_count` e `documents` são o lastro que a pessoa tem para decidir uma
+    associação, e `associations` são as `RELATED_TO` que já existem tocando este conceito,
+    em qualquer das duas pontas.
+    """
+
+    id: UUID
+    name: str
+    annotation_count: int
+    documents: list[ConceptReferenceResponse] = Field(default_factory=list)
+    associations: list[ConceptAssociationResponse] = Field(default_factory=list)

@@ -43,6 +43,7 @@ from notely.providers.pdf_text import EXTRACTOR_VERSION
 from notely.db.models import (
     AIModelConfigRow,
     AISuggestionRow,
+    AnnotationConceptRow,
     AnnotationRow,
     ClaimRelationRow,
     ClaimRow,
@@ -676,6 +677,67 @@ class SqlAlchemyUnitOfWork:
             )
         )
         return _to_concept(row) if row else None
+
+    async def list_concepts(self) -> list[Concept]:
+        """Conceitos do dono, em ordem estável de nome."""
+        rows = (
+            await self._active_session().scalars(
+                select(ConceptRow)
+                .where(ConceptRow.user_id == self._user_id)
+                .order_by(ConceptRow.name, ConceptRow.id)
+            )
+        ).all()
+        return [_to_concept(row) for row in rows]
+
+    async def list_concept_references(
+        self, concept_ids: list[UUID]
+    ) -> list[tuple[UUID, UUID, UUID, str]]:
+        """Citações dos conceitos: `(conceito, anotação, documento, título)`.
+
+        O escopo é do dono nas duas pontas — anotação e documento —, e anotação removida não
+        conta: a lista que a tela mostra é a do acervo vivo. O `distinct` evita contar duas
+        vezes a mesma anotação ligada ao mesmo conceito por relações diferentes.
+        """
+        if not concept_ids:
+            return []
+        rows = await self._active_session().execute(
+            select(
+                AnnotationConceptRow.concept_id,
+                AnnotationRow.id,
+                AnnotationRow.document_id,
+                DocumentRow.title,
+            )
+            .join(AnnotationRow, AnnotationRow.id == AnnotationConceptRow.annotation_id)
+            .join(DocumentRow, DocumentRow.id == AnnotationRow.document_id)
+            .where(
+                AnnotationConceptRow.concept_id.in_(concept_ids),
+                AnnotationRow.user_id == self._user_id,
+                AnnotationRow.deleted_at.is_(None),
+                DocumentRow.user_id == self._user_id,
+            )
+            .distinct()
+        )
+        return [(row[0], row[1], row[2], row[3]) for row in rows]
+
+    async def list_concept_associations(self, concept_ids: list[UUID]) -> list[ClaimRelation]:
+        """Arestas `RELATED_TO` do dono que tocam os conceitos, em qualquer das duas pontas."""
+        if not concept_ids:
+            return []
+        rows = (
+            await self._active_session().scalars(
+                select(ClaimRelationRow)
+                .where(
+                    ClaimRelationRow.user_id == self._user_id,
+                    ClaimRelationRow.relation == ClaimRelationKind.RELATED_TO.value,
+                    or_(
+                        ClaimRelationRow.source_concept_id.in_(concept_ids),
+                        ClaimRelationRow.target_concept_id.in_(concept_ids),
+                    ),
+                )
+                .order_by(ClaimRelationRow.created_at, ClaimRelationRow.id)
+            )
+        ).all()
+        return [_to_claim_relation(row) for row in rows]
 
     async def get_claim_relation(self, relation_id: UUID) -> ClaimRelation | None:
         row = await self._active_session().scalar(

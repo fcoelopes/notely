@@ -29,6 +29,11 @@ from notely.core.models import (
     utc_now,
 )
 from notely.core.claims import ClaimEvidence, normalize_claim_text
+from notely.core.concepts import (
+    ConceptAssociation,
+    ConceptOverview,
+    ConceptReference,
+)
 from notely.core.curation import CurationView, CuratedSourceView
 from notely.core.passage import anchor_from_position, passage_id
 from notely.core.progress import (
@@ -567,6 +572,86 @@ class NotelyService:
                 await uow.add_outbox_event(_claim_relation_event(relation))
             await uow.commit()
         return relation
+
+    async def list_concept_overviews(self) -> list[ConceptOverview]:
+        """Conceitos do dono com a contagem de trechos, os documentos e as associações.
+
+        A contagem é o que dá sentido à lista: sem ela, o que aparece é uma nuvem de termos
+        ranqueados por frequência, e a associação entre dois conceitos seria feita no escuro.
+        Os documentos permitem filtrar pelas obras da sessão aberta, e as associações
+        `RELATED_TO` existentes — em qualquer das duas pontas — aparecem para que a tela não
+        ofereça o que já foi afirmado e possa remover.
+
+        Nada aqui é promovido a autoral: o conceito continua sendo inferência de modelo ou
+        heurística. O que é autoral é a aresta que a pessoa criou.
+        """
+        async with self._uow_factory() as uow:
+            concepts = await uow.list_concepts()
+            if not concepts:
+                return []
+            concept_ids = [concept.id for concept in concepts]
+            references = await uow.list_concept_references(concept_ids)
+            associations = await uow.list_concept_associations(concept_ids)
+
+        known = {concept.id: concept for concept in concepts}
+        annotations: dict[UUID, set[UUID]] = {}
+        documents: dict[UUID, dict[UUID, set[UUID]]] = {}
+        titles: dict[UUID, str] = {}
+        for concept_id, annotation_id, document_id, document_title in references:
+            annotations.setdefault(concept_id, set()).add(annotation_id)
+            documents.setdefault(concept_id, {}).setdefault(document_id, set()).add(
+                annotation_id
+            )
+            titles[document_id] = document_title
+
+        edges: dict[UUID, list[ConceptAssociation]] = {}
+        for relation in associations:
+            source, target = relation.source_concept_id, relation.target_concept_id
+            if source is None or target is None:  # pragma: no cover - o CHECK garante
+                continue
+            for concept_id, other_id, outgoing in ((source, target, True), (target, source, False)):
+                if concept_id not in known:
+                    continue
+                other = known.get(other_id)
+                # A associação só existe entre conceitos do dono; sem o outro conceito não
+                # há como dizer com quem o conceito está associado, e a aresta não é exibida.
+                if other is None:  # pragma: no cover - garantido pela escrita
+                    continue
+                edges.setdefault(concept_id, []).append(
+                    ConceptAssociation(
+                        relation=relation,
+                        other_concept_id=other_id,
+                        other_concept_name=other.name,
+                        outgoing=outgoing,
+                    )
+                )
+
+        overviews = []
+        for concept in concepts:
+            per_document = tuple(
+                sorted(
+                    (
+                        ConceptReference(
+                            document_id=document_id,
+                            document_title=titles[document_id],
+                            annotation_count=len(annotation_ids),
+                        )
+                        for document_id, annotation_ids in documents.get(concept.id, {}).items()
+                    ),
+                    key=lambda item: (-item.annotation_count, item.document_title.casefold()),
+                )
+            )
+            overviews.append(
+                ConceptOverview(
+                    concept=concept,
+                    annotation_count=len(annotations.get(concept.id, ())),
+                    documents=per_document,
+                    associations=tuple(edges.get(concept.id, ())),
+                )
+            )
+        # O mais referenciado primeiro: é o que tem mais lastro para sustentar uma associação.
+        overviews.sort(key=lambda item: (-item.annotation_count, item.concept.name.casefold()))
+        return overviews
 
     async def relate_concepts(
         self, *, source_concept_id: UUID, target_concept_id: UUID

@@ -3,6 +3,10 @@ import type {
   Annotation,
   AnnotationPosition,
   AnnotationType,
+  ClaimEvidence,
+  ClaimEvidenceRelation,
+  ClaimRelationRecord,
+  ConceptOverview,
   DocumentRecord,
   DocumentBookmark,
   DocumentSummary,
@@ -171,6 +175,56 @@ export function createStudySession(theme: string | null): Promise<StudySession> 
 
 export function listStudySessions(): Promise<StudySession[]> {
   return request("/api/study-sessions");
+}
+
+/** Afirmações do usuário com a evidência de cada uma, do mais recente ao antigo. */
+export function listClaims(): Promise<ClaimEvidence[]> {
+  return request("/api/claims");
+}
+
+/**
+ * Afirma algo a partir de um trecho anotado. O mesmo texto reaproveita a afirmação que já
+ * existe no domínio e apenas acrescenta a evidência, sem duplicar conhecimento.
+ */
+export function createClaim(input: {
+  annotation_id: string;
+  text: string;
+  relation: ClaimEvidenceRelation;
+}): Promise<ClaimEvidence> {
+  return request("/api/claims", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteClaim(claimId: string): Promise<void> {
+  return request(`/api/claims/${claimId}`, { method: "DELETE" });
+}
+
+/**
+ * Conceitos do usuário com a contagem de trechos, os documentos e as associações existentes.
+ * Eles são inferência de modelo ou heurística, não conhecimento confirmado.
+ */
+export function listConcepts(): Promise<ConceptOverview[]> {
+  return request("/api/concepts");
+}
+
+/** Associa dois conceitos do usuário. Repetir o mesmo par é idempotente no domínio. */
+export function createConceptRelation(
+  sourceConceptId: string,
+  targetConceptId: string,
+): Promise<ClaimRelationRecord> {
+  return request("/api/concept-relations", {
+    method: "POST",
+    body: JSON.stringify({
+      source_concept_id: sourceConceptId,
+      target_concept_id: targetConceptId,
+    }),
+  });
+}
+
+export function deleteClaimRelation(relationId: string): Promise<ClaimRelationRecord> {
+  return request(`/api/claim-relations/${relationId}`, { method: "DELETE" });
 }
 
 export function getStudySession(sessionId: string): Promise<StudySessionDetail> {

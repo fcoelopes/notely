@@ -270,6 +270,35 @@ Remover uma afirmação tira o nó e as arestas do grafo; a linha permanece no P
 `deleted_at` e o `--rebuild` a ignora. Ver
 [ADR 0008](../docs/adr/0008-claims-and-semantic-edges.md).
 
+## Leitura de conceitos para a tela de afirmações (issue #22)
+
+A tela de afirmações e associações do Reader precisa saber quais conceitos têm lastro na
+sessão aberta antes de oferecer uma associação. Para isso a fase C ganhou a leitura que
+faltava — as demais rotas acima não mudaram:
+
+```text
+GET /api/concepts    conceitos do usuário com a contagem de trechos que os referenciam, os
+                     documentos dessas anotações e as associações RELATED_TO que tocam o
+                     conceito em qualquer das duas pontas
+```
+
+Cada entrada traz `id`, `name`, `annotation_count`, `documents` (`document_id`,
+`document_title` e `annotation_count` por documento) e `associations`. A contagem é por
+anotação distinta e ignora anotação removida; os documentos permitem ao cliente filtrar
+pelas obras da sessão aberta. Cada associação carrega `relation_id`, as duas pontas,
+`other_concept_id`, `other_concept_name`, `outgoing`, `provenance` e `status`: o par é
+ordenado no banco, então associar na ordem inversa é **outra** aresta, e a tela diz isso.
+Conceito sem trecho nenhum continua listado, com contagem zero — esconder o que o domínio
+guarda seria pior do que mostrar que ele não tem lastro.
+
+A rota é escopada por dono como as demais, e o conceito continua sendo **inferência** de
+modelo ou heurística: a leitura não promove nada a conhecimento confirmado, o que só
+acontece pelo aceite explícito previsto em
+[ADR 0005](../docs/adr/0005-concept-extraction-as-inference.md). O que é autoral é a
+associação `RELATED_TO`, criada por `POST /api/concept-relations`.
+[Plano](../future/tela-afirmacoes-reader.md) e
+[ADR 0008](../docs/adr/0008-claims-and-semantic-edges.md).
+
 ## Contas, sessão e segundo fator (issue #7)
 
 Todas as rotas de domínio exigem sessão ativa: sem cookie válido a API responde `401`

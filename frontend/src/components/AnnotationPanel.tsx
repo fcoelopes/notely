@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Document, Page } from "react-pdf";
-import type { Annotation, CuratedSource, QuestionSources as SourcesState } from "../types";
+import type {
+  Annotation,
+  ClaimEvidenceRelation,
+  CuratedSource,
+  QuestionSources as SourcesState,
+} from "../types";
 import { documentContentUrl, getQuestionSources, retryQuestionSources } from "../lib/api";
 import { annotationLabel } from "./AnnotationOverlay";
 
@@ -11,6 +16,12 @@ interface Props {
   availableDocumentIds: string[];
   onGoToPage: (page: number) => void;
   onGoToSource: (documentId: string, page: number) => void;
+  /** Afirma a partir do trecho. `false` diz que a gravação falhou e o rascunho fica. */
+  onAssert: (
+    annotationId: string,
+    text: string,
+    relation: ClaimEvidenceRelation,
+  ) => Promise<boolean>;
 }
 
 function QuestionSources({
@@ -114,7 +125,7 @@ function QuestionSources({
   );
 }
 
-export function AnnotationPanel({ annotations, pageNumber, sessionId, availableDocumentIds, onGoToPage, onGoToSource }: Props) {
+export function AnnotationPanel({ annotations, pageNumber, sessionId, availableDocumentIds, onGoToPage, onGoToSource, onAssert }: Props) {
   return (
     <aside className="annotation-panel">
       <div className="panel-heading">
@@ -140,6 +151,7 @@ export function AnnotationPanel({ annotations, pageNumber, sessionId, availableD
                 {annotation.comment && <p>{annotation.comment}</p>}
                 <small>Página {annotation.page_number}</small>
               </button>
+              <AssertAction annotation={annotation} onAssert={onAssert} />
               {annotation.type === "question" && annotation.study_session_id === sessionId && (
                 <QuestionSources annotationId={annotation.id} sessionId={sessionId}
                   availableDocumentIds={availableDocumentIds} onGoToSource={onGoToSource} />
@@ -149,5 +161,107 @@ export function AnnotationPanel({ annotations, pageNumber, sessionId, availableD
         </ol>
       )}
     </aside>
+  );
+}
+
+/**
+ * Afirmar a partir do trecho anotado.
+ *
+ * A afirmação nasce de uma anotação existente: o trecho é a evidência do que a pessoa leu.
+ * Enquanto a gravação não termina bem, o formulário continua aberto com o texto escrito — o
+ * domínio reaproveita a afirmação quando o texto já existe, e nada se perde por tentar de
+ * novo.
+ */
+function AssertAction({
+  annotation,
+  onAssert,
+}: {
+  annotation: Annotation;
+  onAssert: (annotationId: string, text: string, relation: ClaimEvidenceRelation) => Promise<boolean>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [relation, setRelation] = useState<ClaimEvidenceRelation>("supports");
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const clean = text.trim();
+    if (!clean || saving) return;
+    setSaving(true);
+    setFailed(false);
+    try {
+      if (await onAssert(annotation.id, clean, relation)) {
+        setOpen(false);
+        setText("");
+        setRelation("supports");
+      } else {
+        setFailed(true);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <div className="annotation-actions">
+        <button
+          aria-label={`Afirmar a partir deste trecho da página ${annotation.page_number}`}
+          className="assert-toggle"
+          onClick={() => setOpen(true)}
+          type="button"
+        >
+          Afirmar
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <form className="assert-form" onSubmit={(event) => void submit(event)}>
+      <label>
+        Afirmação
+        <textarea
+          aria-label="Texto da afirmação"
+          autoFocus
+          maxLength={2000}
+          onChange={(event) => setText(event.target.value)}
+          placeholder="O que este trecho permite afirmar"
+          value={text}
+        />
+      </label>
+      <label>
+        Relação com o trecho
+        <select
+          aria-label="Relação com o trecho"
+          onChange={(event) => setRelation(event.target.value as ClaimEvidenceRelation)}
+          value={relation}
+        >
+          <option value="supports">sustenta</option>
+          <option value="contradicts">contradiz</option>
+        </select>
+      </label>
+      <small>Afirmar o mesmo texto de novo só acrescenta esta evidência à afirmação existente.</small>
+      {failed && (
+        <p className="assert-failure" role="alert">
+          Não foi possível gravar a afirmação. O texto foi mantido para tentar de novo.
+        </p>
+      )}
+      <div className="assert-form-actions">
+        <button
+          className="assert-cancel"
+          disabled={saving}
+          onClick={() => { setOpen(false); setText(""); setRelation("supports"); setFailed(false); }}
+          type="button"
+        >
+          Cancelar
+        </button>
+        <button className="assert-save" disabled={saving || !text.trim()} type="submit">
+          {saving ? "Salvando…" : "Salvar afirmação"}
+        </button>
+      </div>
+    </form>
   );
 }

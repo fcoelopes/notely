@@ -130,36 +130,39 @@ async def project_claim(*, session: AsyncSession, graph: AgeGraph, claim: ClaimR
 
 async def project_claim_relation(
     *, session: AsyncSession, graph: AgeGraph, relation: ClaimRelationRow
-) -> None:
+) -> bool:
     """Projeta uma aresta semântica, garantindo que as pontas já existam no grafo.
 
     Nada aqui é inventado a partir do payload: as pontas são confirmadas no PostgreSQL, e a
     projeção só acontece com os registros presentes e não removidos. Repetir a mesma entrega
     é idempotente, porque tanto os nós das pontas quanto a aresta usam `MERGE`.
+
+    Devolve `False` quando a aresta não foi projetada por falta de ponta viva: quem conta
+    projeções não pode somar o que não foi escrito.
     """
     if relation.relation in ("supports", "contradicts"):
         if relation.annotation_id is None or relation.claim_id is None:
-            return
+            return False
         annotation = await session.get(AnnotationRow, relation.annotation_id)
         if annotation is None or annotation.deleted_at is not None:
-            return
+            return False
         claim = await session.get(ClaimRow, relation.claim_id)
         if claim is None or claim.deleted_at is not None:
-            return
+            return False
         await project_claim(session=session, graph=graph, claim=claim)
     elif relation.relation == "answered_by":
         if relation.question_annotation_id is None or relation.answer_annotation_id is None:
-            return
+            return False
         for annotation_id in (
             relation.question_annotation_id,
             relation.answer_annotation_id,
         ):
             annotation = await session.get(AnnotationRow, annotation_id)
             if annotation is None or annotation.deleted_at is not None:
-                return
+                return False
             document = await session.get(DocumentRow, annotation.document_id)
             if document is None:
-                return
+                return False
             await graph.project_annotation(
                 session=session,
                 annotation_id=annotation.id,
@@ -170,11 +173,11 @@ async def project_claim_relation(
             )
     else:
         if relation.source_concept_id is None or relation.target_concept_id is None:
-            return
+            return False
         for concept_id in (relation.source_concept_id, relation.target_concept_id):
             concept = await session.get(ConceptRow, concept_id)
             if concept is None:
-                return
+                return False
             await graph.project_concept(
                 session=session, concept_id=concept.id, name=concept.name
             )
@@ -191,6 +194,7 @@ async def project_claim_relation(
         source_concept_id=relation.source_concept_id,
         target_concept_id=relation.target_concept_id,
     )
+    return True
 
 
 async def _relation_row(
@@ -420,8 +424,8 @@ async def rebuild(*, sessions: async_sessionmaker[AsyncSession], graph: AgeGraph
             )
         ).all()
         for relation in claim_relations:
-            await project_claim_relation(session=session, graph=graph, relation=relation)
-            projected += 1
+            if await project_claim_relation(session=session, graph=graph, relation=relation):
+                projected += 1
         await session.commit()
         return projected
 

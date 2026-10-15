@@ -34,7 +34,7 @@ class ClaimEvidence:
     """
 
     claim: Claim
-    relation: ClaimRelation
+    relation: ClaimRelation | None = None
     quote: str = ""
     comment: str | None = None
     document_id: UUID | None = None

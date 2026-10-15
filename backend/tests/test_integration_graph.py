@@ -69,6 +69,9 @@ async def context() -> AsyncIterator[IntegrationContext]:
     async with context.sessions() as db:
         await context.graph.truncate(session=db)
         await db.execute(text("delete from outbox_events"))
+        # Afirmações não dependem de documento: sem apagá-las, a contagem do `--rebuild`
+        # cresce com o resíduo de outro teste e a expectativa fica dependente da ordem.
+        await db.execute(text("delete from claims"))
         await db.execute(text("delete from documents"))
         await db.commit()
 

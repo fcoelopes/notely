@@ -264,14 +264,19 @@ def _ai_config_payload(config: AIModelConfig) -> AIModelConfigResponse:
 
 
 def _claim_evidence_payload(evidence: ClaimEvidence) -> ClaimEvidenceResponse:
-    """Traduz a evidência do domínio para a resposta: afirmação + aresta + trecho."""
+    """Traduz a evidência do domínio para a resposta: afirmação + aresta + trecho.
+
+    A aresta é nula quando a afirmação ficou sem evidência; a afirmação aparece de qualquer
+    forma, porque o conhecimento autoral não desaparece junto com a anotação que o sustentava.
+    """
+    relation = evidence.relation
     return ClaimEvidenceResponse(
         claim=ClaimResponse.model_validate(evidence.claim),
-        relation=evidence.relation.relation,
-        relation_id=evidence.relation.id,
-        relation_provenance=evidence.relation.provenance,
-        relation_status=evidence.relation.status,
-        annotation_id=evidence.relation.annotation_id,
+        relation=relation.relation if relation else None,
+        relation_id=relation.id if relation else None,
+        relation_provenance=relation.provenance if relation else None,
+        relation_status=relation.status if relation else None,
+        annotation_id=relation.annotation_id if relation else None,
         document_id=evidence.document_id,
         document_title=evidence.document_title,
         page_number=evidence.page_number,

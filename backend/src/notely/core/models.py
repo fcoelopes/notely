@@ -518,7 +518,13 @@ def _require_inference_source(
 
     O caminho inverso também vale: registro autoral não carrega provedor nem modelo, porque
     não houve modelo — aceitar um `provider` ali seria provenance ambígua no grafo.
+
+    `user_confirmed` é recusado porque as tabelas de afirmação não o guardam: aceitar uma
+    sugestão mantém `ai_inference` como origem, com provedor e modelo preservados, e passa a
+    `accepted`. O CHECK da migration `0015` só admite `user_authored` e `ai_inference`.
     """
+    if provenance is RelationProvenance.USER_CONFIRMED:
+        raise ValueError(f"{label} provenance must be user_authored or ai_inference")
     if provenance is RelationProvenance.AI_INFERENCE:
         for name, value in (("provider", provider), ("model", model)):
             if value is None or not value.strip():

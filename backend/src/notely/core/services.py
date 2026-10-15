@@ -446,10 +446,10 @@ class NotelyService:
 
         Anotação de outra conta responde como inexistente: a leitura já é escopada ao dono.
 
-        O evento é publicado apenas para o que nasceu agora. Afirmar de novo o mesmo texto com
-        a mesma evidência é uma repetição idempotente: nada mudou no PostgreSQL, então não há
-        o que projetar. Eventos de fato pontual são deduplicados por agregado + tipo, então
-        publicar de novo seria rejeitado pelo outbox de qualquer forma.
+        O evento é publicado apenas para o que nasceu agora. Reafirmar reaproveita a afirmação
+        existente sem alterá-la — o reuso não reescreve texto nem proveniência, justamente para
+        não destruir a origem de uma sugestão aceita —, então nada mudou no PostgreSQL e não há
+        o que reprojetar. Reafirmar com a mesma evidência também não cria aresta nova.
         """
         if relation not in (ClaimRelationKind.SUPPORTS, ClaimRelationKind.CONTRADICTS):
             raise ValueError(
@@ -463,7 +463,7 @@ class NotelyService:
             if annotation is None:
                 raise DocumentNotFoundError(f"annotation {annotation_id} does not exist")
             now = utc_now()
-            claim = await uow.upsert_claim(Claim(
+            claim, claim_created = await uow.upsert_claim(Claim(
                 text=clean_text,
                 normalized_text=normalize_claim_text(clean_text),
                 provenance=RelationProvenance.USER_AUTHORED,
@@ -472,9 +472,6 @@ class NotelyService:
                 updated_at=now,
                 accepted_at=now,
             ))
-            # `created_at` diferente do enviado significa que a linha já existia: o upsert
-            # preserva a data da afirmação original.
-            claim_created = claim.created_at == now
             # Afirmar é um aceite: a aresta nasce autoral e valendo.
             candidate = ClaimRelation(
                 relation=relation,
@@ -499,11 +496,19 @@ class NotelyService:
         return evidence
 
     async def list_claim_evidence(self) -> list[ClaimEvidence]:
-        """Afirmações do usuário com a evidência que as sustenta, do mais recente ao antigo."""
+        """Afirmações do usuário com a evidência que as sustenta, do mais recente ao antigo.
+
+        Afirmação sem aresta continua sendo do usuário: aparece com a evidência vazia, em vez
+        de desaparecer da listagem quando a única anotação que a sustentava é removida.
+        """
         async with self._uow_factory() as uow:
             entries: list[ClaimEvidence] = []
             for claim in reversed(await uow.list_claims()):
-                for relation in await uow.list_claim_relations(claim_id=claim.id):
+                relations = await uow.list_claim_relations(claim_id=claim.id)
+                if not relations:
+                    entries.append(ClaimEvidence(claim=claim))
+                    continue
+                for relation in relations:
                     entries.append(await _evidence_for(uow, claim=claim, relation=relation))
             return entries
 
@@ -1063,13 +1068,15 @@ def _optional_id(value: UUID | None) -> str | None:
 
 
 async def _evidence_for(
-    uow: UnitOfWork, *, claim: Claim, relation: ClaimRelation
+    uow: UnitOfWork, *, claim: Claim, relation: ClaimRelation | None
 ) -> ClaimEvidence:
     """Monta a evidência a partir da anotação de origem, quando ela ainda existe.
 
     O trecho fica vazio se a anotação não existe mais: a afirmação continua sendo do usuário
-    e não desaparece por causa da evidência.
+    e não desaparece por causa da evidência. Sem aresta nenhuma, só a afirmação é devolvida.
     """
+    if relation is None:
+        return ClaimEvidence(claim=claim)
     annotation_id = relation.annotation_id or relation.question_annotation_id
     if annotation_id is None:
         return ClaimEvidence(claim=claim, relation=relation)

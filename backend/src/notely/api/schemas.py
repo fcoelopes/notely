@@ -328,15 +328,17 @@ class ClaimResponse(BaseModel):
 class ClaimEvidenceResponse(BaseModel):
     """Afirmação com a evidência que a sustenta.
 
-    `relation` é a aresta que liga o trecho à afirmação, com proveniência e status; o trecho
-    vem vazio quando a anotação de origem não existe mais no acervo.
+    `relation` é a aresta que liga o trecho à afirmação, com proveniência e status. Ela é nula
+    quando a afirmação ficou sem evidência — a última aresta foi removida —, porque o dado
+    autoral continua sendo do usuário mesmo sem nenhum trecho apontando para ele. O trecho
+    também vem vazio quando a anotação de origem não existe mais no acervo.
     """
 
     claim: ClaimResponse
-    relation: ClaimRelationKind
-    relation_id: UUID
-    relation_provenance: RelationProvenance
-    relation_status: RelationStatus
+    relation: ClaimRelationKind | None = None
+    relation_id: UUID | None = None
+    relation_provenance: RelationProvenance | None = None
+    relation_status: RelationStatus | None = None
     annotation_id: UUID | None
     document_id: UUID | None
     document_title: str | None

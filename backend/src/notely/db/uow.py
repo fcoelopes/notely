@@ -551,51 +551,57 @@ class SqlAlchemyUnitOfWork:
         )
         return _to_claim(row) if row else None
 
-    async def upsert_claim(self, claim: Claim) -> Claim:
-        """Reaproveita a afirmação de mesmo texto normalizado e devolve a linha de verdade.
+    async def upsert_claim(self, claim: Claim) -> tuple[Claim, bool]:
+        """Reaproveita a afirmação de mesmo texto normalizado e diz se ela nasceu agora.
 
         A deduplicação é o índice único **parcial** `(user_id, normalized_text) WHERE
         deleted_at IS NULL`: duas afirmações com o mesmo texto convivem quando a primeira
         foi removida. O `WHERE` do alvo precisa ser declarado aqui, senão o PostgreSQL não
         reconhece o índice e o `ON CONFLICT` falha.
+
+        O conflito não altera a linha existente. Reafirmar acrescenta evidência, e reescrever
+        texto, proveniência, provedor ou modelo destruiria a origem de uma sugestão de modelo
+        que o usuário aceitou. Como nada muda no PostgreSQL nesse ramo, nada precisa ser
+        reprojetado, e o `False` diz exatamente isso a quem chama.
         """
-        statement = (
-            insert(ClaimRow)
-            .values(
-                id=claim.id,
-                user_id=self._user_id,
-                text=claim.text,
-                normalized_text=claim.normalized_text,
-                provenance=claim.provenance.value,
-                status=claim.status.value,
-                provider=claim.provider,
-                model=claim.model,
-                confidence=claim.confidence,
-                created_at=claim.created_at,
-                updated_at=claim.updated_at,
-                accepted_at=claim.accepted_at,
-                deleted_at=claim.deleted_at,
+        session = self._active_session()
+        inserted = (
+            await session.scalars(
+                insert(ClaimRow)
+                .values(
+                    id=claim.id,
+                    user_id=self._user_id,
+                    text=claim.text,
+                    normalized_text=claim.normalized_text,
+                    provenance=claim.provenance.value,
+                    status=claim.status.value,
+                    provider=claim.provider,
+                    model=claim.model,
+                    confidence=claim.confidence,
+                    created_at=claim.created_at,
+                    updated_at=claim.updated_at,
+                    accepted_at=claim.accepted_at,
+                    deleted_at=claim.deleted_at,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[ClaimRow.user_id, ClaimRow.normalized_text],
+                    index_where=text("deleted_at IS NULL"),
+                )
+                .returning(ClaimRow)
             )
-            .on_conflict_do_update(
-                index_elements=[ClaimRow.user_id, ClaimRow.normalized_text],
-                index_where=text("deleted_at IS NULL"),
-                # Afirmar de novo atualiza o texto exibido e confirma o estado autoral; a
-                # data de criação da afirmação original é preservada.
-                set_={
-                    "text": claim.text,
-                    "provenance": claim.provenance.value,
-                    "status": claim.status.value,
-                    "provider": claim.provider,
-                    "model": claim.model,
-                    "confidence": claim.confidence,
-                    "updated_at": claim.updated_at,
-                    "accepted_at": claim.accepted_at,
-                },
+        ).one_or_none()
+        if inserted is not None:
+            return _to_claim(inserted), True
+        existing = (
+            await session.scalars(
+                select(ClaimRow).where(
+                    ClaimRow.user_id == self._user_id,
+                    ClaimRow.normalized_text == claim.normalized_text,
+                    ClaimRow.deleted_at.is_(None),
+                )
             )
-            .returning(ClaimRow)
-        )
-        row = (await self._active_session().scalars(statement)).one()
-        return _to_claim(row)
+        ).one()
+        return _to_claim(existing), False
 
     async def list_claims(self) -> list[Claim]:
         rows = (
@@ -858,7 +864,8 @@ def _to_claim_relation(row: ClaimRelationRow) -> ClaimRelation:
     )
 
 
-def _to_document_bookmark(row: DocumentBookmarkRow) -> DocumentBookmark:    return DocumentBookmark(
+def _to_document_bookmark(row: DocumentBookmarkRow) -> DocumentBookmark:
+    return DocumentBookmark(
         document_id=row.document_id,
         page_number=row.page_number,
         created_at=row.created_at,

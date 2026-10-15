@@ -25,7 +25,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from auth_helpers import TEST_USER_ID, authenticate, ensure_test_user
 from notely.api.app import create_app
-from notely.core.models import AnnotationType, ClaimRelationKind, User, utc_now
+from notely.core.models import (
+    AnnotationType,
+    ClaimRelationKind,
+    RelationProvenance,
+    User,
+    utc_now,
+)
 from notely.core.services import (
     ClaimNotFoundError,
     ClaimRelationNotFoundError,
@@ -264,11 +270,20 @@ async def test_asserting_the_same_text_reuses_the_claim_and_adds_evidence(
         assert await db.scalar(select(func.count()).select_from(ClaimRelationRow)) == 2
         stored = (await db.scalars(select(ClaimRow))).one()
     assert stored.id == repeated.claim.id
+    # O reuso não reescreve a linha existente: o texto exibido continua o primeiro, e a
+    # proveniência não é trocada. Reescrever destruiria a origem de uma sugestão de modelo que
+    # o usuário tivesse aceitado, e deixaria o grafo com o texto antigo.
+    assert stored.text == CLAIM_TEXT
+    assert stored.provenance == RelationProvenance.USER_AUTHORED.value
+    assert stored.accepted_at is not None
 
     await _project(context)
     counts = await _counts(context)
     assert counts["claims"] == 1
     assert counts["supports"] == 2
+    # As duas camadas concordam sobre o texto: nada ficou obsoleto no grafo.
+    nodes = await _node_properties(context, "Claim")
+    assert [node["text"] for node in nodes] == [stored.text]
 
     listed = await service.list_claim_evidence()
     assert len(listed) == 2
@@ -343,7 +358,12 @@ async def test_related_to_links_two_owned_concepts(context: IntegrationContext) 
         source_concept_id=first, target_concept_id=second
     )
     assert relation.relation is ClaimRelationKind.RELATED_TO
-    await service.relate_concepts(source_concept_id=first, target_concept_id=second)
+    # Repetir devolve a mesma aresta: a idempotência vale no banco, não só no `MERGE` do grafo,
+    # que daria contagem 1 mesmo com duas linhas gravadas.
+    again = await service.relate_concepts(source_concept_id=first, target_concept_id=second)
+    assert again.id == relation.id
+    async with context.sessions() as db:
+        assert await db.scalar(select(func.count()).select_from(ClaimRelationRow)) == 1
 
     await _project(context)
     counts = await _counts(context)
@@ -752,3 +772,70 @@ async def test_rebuild_requires_postgresql_as_the_source_of_truth(
     counts = await _counts(context)
     assert counts["claims"] == 0
     assert counts["supports"] == 0
+
+
+async def test_claim_without_evidence_stays_listed(context: IntegrationContext) -> None:
+    """A afirmação é do usuário mesmo sem trecho apontando para ela.
+
+    Remover a única evidência não pode esconder o dado autoral da listagem: a afirmação segue
+    ativa no PostgreSQL e precisa continuar alcançável, com a evidência vazia.
+    """
+    service = context.service()
+    document_id = await _register_document(context, service)
+    annotation_id = await _create_annotation(
+        context, service, document_id, AnnotationType.HIGHLIGHT
+    )
+    evidence = await service.create_claim(
+        annotation_id=annotation_id, text=CLAIM_TEXT, relation=ClaimRelationKind.SUPPORTS
+    )
+    assert len(await service.list_claim_evidence()) == 1
+
+    await service.delete_claim_relation(evidence.relation.id)
+
+    listed = await service.list_claim_evidence()
+    assert len(listed) == 1
+    assert listed[0].claim.id == evidence.claim.id
+    assert listed[0].relation is None
+    async with context.sessions() as db:
+        stored = (await db.scalars(select(ClaimRow))).one()
+    assert stored.deleted_at is None
+
+
+async def test_asserting_the_same_text_after_removal_creates_a_new_claim(
+    context: IntegrationContext,
+) -> None:
+    """O índice de unicidade é parcial: a afirmação removida não bloqueia a nova.
+
+    É a razão de o índice existir — sem o `WHERE deleted_at IS NULL`, afirmar de novo o mesmo
+    texto depois de remover a afirmação anterior falharia no conflito.
+    """
+    service = context.service()
+    document_id = await _register_document(context, service)
+    first_annotation = await _create_annotation(
+        context, service, document_id, AnnotationType.HIGHLIGHT
+    )
+    second_annotation = await _create_annotation(
+        context,
+        service,
+        document_id,
+        AnnotationType.NOTE,
+        quote=ANSWER_QUOTE,
+        comment="outro trecho",
+    )
+
+    original = await service.create_claim(
+        annotation_id=first_annotation, text=CLAIM_TEXT, relation=ClaimRelationKind.SUPPORTS
+    )
+    await service.delete_claim(original.claim.id)
+
+    again = await service.create_claim(
+        annotation_id=second_annotation, text=CLAIM_TEXT, relation=ClaimRelationKind.SUPPORTS
+    )
+    assert again.claim.id != original.claim.id
+    async with context.sessions() as db:
+        active = await db.scalar(
+            select(func.count())
+            .select_from(ClaimRow)
+            .where(ClaimRow.deleted_at.is_(None))
+        )
+    assert active == 1

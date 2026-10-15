@@ -238,11 +238,13 @@ uv run --project backend python -m notely.workers.graph --rebuild
 ```
 
 O nó carrega `source_id`, `text`, `provenance` e `status`; as arestas carregam `provenance` e
-`status`. Uma afirmação feita pela API nasce `user_authored` e `accepted`: `user_authored` é
-produzida pelo usuário, enquanto `user_confirmed` é relação **inferida** que ele aceitou — as
-duas permanecem distinguíveis no grafo. Documento, anotação, conceito ou afirmação de outra
-conta respondem como inexistentes. Remover uma afirmação tira o nó e as arestas do grafo; a
-linha permanece no PostgreSQL com `deleted_at` e o `--rebuild` a ignora. Ver
+`status`. Uma afirmação feita pela API nasce `user_authored` e `accepted`, porque foi o próprio
+usuário quem a escreveu. Aceitar uma sugestão de modelo não troca a origem: a linha continua
+`ai_inference`, com `provider` e `model` preservados, e passa a `accepted` — `user_confirmed` não
+é usado aqui, só em `annotation_concepts`. Reafirmar o mesmo texto reaproveita a afirmação sem
+alterá-la. Documento, anotação, conceito ou afirmação de outra conta respondem como inexistentes.
+Remover uma afirmação tira o nó e as arestas do grafo; a linha permanece no PostgreSQL com
+`deleted_at` e o `--rebuild` a ignora. Ver
 [ADR 0008](../docs/adr/0008-claims-and-semantic-edges.md).
 
 ## Contas, sessão e segundo fator (issue #7)

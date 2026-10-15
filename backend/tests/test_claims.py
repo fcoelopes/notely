@@ -164,3 +164,31 @@ def test_user_authoring_is_distinguishable_from_user_confirmation() -> None:
     assert RelationProvenance.USER_AUTHORED.value == "user_authored"
     assert RelationProvenance.USER_CONFIRMED.value == "user_confirmed"
     assert len(set(RelationProvenance)) == 3
+
+
+def test_claims_refuse_the_provenance_the_tables_do_not_store() -> None:
+    """As tabelas de afirmação só guardam `user_authored` e `ai_inference`.
+
+    Aceitar uma sugestão mantém `ai_inference` como origem — com provedor e modelo — e passa a
+    `accepted`, então `user_confirmed` nunca chega ao banco. O domínio recusa antes do INSERT,
+    em vez de deixar o CHECK da migration estourar como violação de banco.
+    """
+    with pytest.raises(ValueError, match="user_authored or ai_inference"):
+        Claim(
+            text="Materialidade é julgada caso a caso",
+            normalized_text="materialidade é julgada caso a caso",
+            provenance=RelationProvenance.USER_CONFIRMED,
+        )
+    with pytest.raises(ValueError, match="user_authored or ai_inference"):
+        _relation(provenance=RelationProvenance.USER_CONFIRMED)
+
+    # E a sugestão aceita continua sendo inferência na origem, com quem inferiu registrado.
+    accepted = _relation(
+        provenance=RelationProvenance.AI_INFERENCE,
+        provider="scripted",
+        model="scripted-1",
+        status=RelationStatus.ACCEPTED,
+        accepted_at=utc_now(),
+    )
+    assert accepted.provenance is RelationProvenance.AI_INFERENCE
+    assert accepted.provider == "scripted"

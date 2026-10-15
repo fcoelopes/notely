@@ -270,11 +270,12 @@ def test_downgrade_cannot_discard_document_bookmark(database: str, tmp_path: Pat
     assert preserved.stdout.strip() == f"{bookmarks}|1"
 
 
-def test_downgrade_of_claims_guards_user_authored_rows(database: str, tmp_path: Path) -> None:
-    """O `down` da revisão de afirmações é recusado enquanto houver afirmação autoral.
+def test_downgrade_of_claims_guards_accepted_rows(database: str, tmp_path: Path) -> None:
+    """O `down` da revisão de afirmações é recusado enquanto houver afirmação aceita.
 
-    Afirmação do usuário não é reconstruível a partir de nada, então o `down` só procede
-    quando não há nada autoral a perder.
+    O critério é o aceite, não a origem: o que o usuário aceitou não é reconstruível a partir de
+    nada, então o `down` só procede quando não há nada aceito a perder. Sugestão que ele não
+    aceitou é inferência e sai junto com a tabela.
     """
     assert migrate(database, tmp_path).returncode == 0
     # A revisão que introduziu `claims` e o alvo imediatamente anterior a ela. Nomear a
@@ -297,14 +298,19 @@ def test_downgrade_of_claims_guards_user_authored_rows(database: str, tmp_path: 
         text=True, capture_output=True, cwd=ROOT, env=environment, check=False,
     )
     assert refused.returncode != 0
-    assert "would discard: user claims" in refused.stderr
+    assert "would discard: accepted claims" in refused.stderr
     preserved = docker("psql", "-U", "notely", "-d", database, "-At", "-c",
                        "select (select version_num from alembic_version), "
                        "(select count(*) from claims)")
     assert preserved.stdout.strip() == f"{claims}|1"
-    # Sem afirmação autoral, o mesmo passo procede e remove tabelas e rótulos.
+    # Sugestão que o usuário não aceitou não bloqueia: ela é inferência, não conhecimento dele.
     assert docker("psql", "-v", "ON_ERROR_STOP=1", "-U", "notely", "-d", database,
-                  input="DELETE FROM claims;").returncode == 0
+                  input=("DELETE FROM claims; INSERT INTO claims (id, user_id, text, "
+                         "normalized_text, provenance, status, provider, model, created_at, "
+                         "updated_at) VALUES (gen_random_uuid(), "
+                         f"'{BOOTSTRAP_USER}', 'sugestao do modelo', 'sugestao do modelo', "
+                         "'ai_inference', 'suggested', 'scripted', 'scripted-1', "
+                         "now(), now());")).returncode == 0
     applied = subprocess.run(
         [str(ROOT / "backend" / ".venv" / "bin" / "alembic"), "-c", "alembic.ini",
          "downgrade", target],

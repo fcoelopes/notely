@@ -26,9 +26,11 @@ onde está a evidência?".
 - **Escopo desta entrega:** domínio, API e grafo. Sem interface no Reader, como na fase B.
 - **Nenhuma chamada de modelo nesta entrega.** O caminho de sugestão por IA fica fora pelo
   mesmo motivo que travou a #8: não há provedor real validado, e implementar sem poder
-  exercitar produziria código não verificado. O schema já acomoda esse caminho
-  (`provenance`, `status`, `provider`, `model`, `confidence`, `accepted_at`), de modo que
-  acrescentá-lo depois é aditivo e não exige migration nova.
+  exercitar produziria código não verificado. O schema acomoda a sugestão
+  (`ai_inference` + `suggested` + `provider` + `model` + `confidence`) e o aceite dela
+  (`ai_inference` + `accepted`, com a origem preservada), de modo que acrescentá-lo depois não
+  exige migration nova. O que **não** existe é `user_confirmed` nestas tabelas: o `CHECK` da
+  `0015` só admite `user_authored` e `ai_inference`, e o domínio recusa o terceiro valor.
 
 ## Domínio e persistência
 
@@ -145,6 +147,48 @@ apagado do banco, como exige o AGENTS.md §14.
 - O reaproveitamento é por texto normalizado, não por significado: "a materialidade é julgada caso a caso" e "o julgamento da materialidade é caso a caso" são afirmações distintas, como os conceitos são sem pgvector.
 - `RELATED_TO` é simétrico no significado e não no banco: o par é ordenado, então afirmar a associação na ordem inversa cria outra aresta. Unificar as duas exigiria uma regra de canonização de par, que não entrou aqui.
 - A projeção da aresta usa `MATCH` nas pontas e não cria nó incompleto: se o nó da anotação ou do conceito ainda não foi projetado, a aresta só aparece na entrega seguinte ou em `--rebuild`. Reprocessar as entregas do grafo reconcilia.
-- Repetir a mesma afirmação com a mesma evidência não publica evento: nada mudou no PostgreSQL. Se a projeção daquela aresta falhou antes, a reconciliação é `--rebuild`, como já previsto no ADR 0005 para o caso análogo.
+- Reafirmar o mesmo texto reaproveita a afirmação **sem alterá-la**: texto, proveniência, provedor e modelo ficam como estavam. Como nada muda no PostgreSQL, nenhum evento é publicado e nada precisa ser reprojetado. Consequência: a redação de uma afirmação não pode ser corrigida nesta entrega, e reafirmar com a mesma evidência não republica a aresta — se a projeção daquela aresta falhou antes, a reconciliação é `--rebuild`, como no caso análogo do ADR 0005.
 - A afirmação não guarda histórico de edição: `upsert` atualiza `text` e `updated_at` da afirmação existente, e o texto anterior não é preservado.
 - As arestas do grafo não guardam o identificador do registro que as originou: a identidade delas é o par de pontas mais o rótulo, como já ocorre nas arestas das fases anteriores. O SPECTEC §9 pede referência ao registro de origem em cada projeção, e hoje isso vale para os nós. Uniformizar exigiria levar o id da relação até a projeção de todas as arestas, incluindo as anteriores a esta entrega.
+
+## Correções após revisão independente
+
+Uma auditoria cética do diff encontrou defeitos reais, corrigidos antes do registro final. O que
+mudou em relação à primeira versão:
+
+- **Reafirmar não reescreve mais a afirmação.** O `upsert` usava `ON CONFLICT DO UPDATE`, que
+  reescrevia texto, proveniência, provedor e modelo: reafirmar o mesmo texto destruía a origem de
+  uma sugestão aceita e, como nenhum evento era publicado, deixava o nó do grafo com o texto
+  antigo enquanto o PostgreSQL já mostrava outro. Agora o conflito não altera a linha, e o
+  `False` devolvido pelo upsert diz a quem chama que nada precisa ser projetado. O `created_at ==
+  now` que inferia INSERT de UPDATE saiu junto. Coberto por
+  `test_asserting_the_same_text_reuses_the_claim_and_adds_evidence`, que agora compara as duas
+  camadas.
+- **Afirmação sem evidência continua alcançável.** `GET /api/claims` só montava entradas dentro
+  do laço de arestas, então remover a única evidência escondia a afirmação da listagem — dado
+  autoral invisível. Coberto por `test_claim_without_evidence_stays_listed`.
+- **Domínio e banco concordam sobre proveniência.** `Claim` e `ClaimRelation` recusam
+  `user_confirmed`, que o `CHECK` da `0015` não admite; antes o domínio aceitava e o INSERT
+  estourava. Coberto por `test_claims_refuse_the_provenance_the_tables_do_not_store`.
+- **A guarda de rollback é por aceite, não por origem.** Antes bloqueava só `user_authored`:
+  uma sugestão de modelo que o usuário aceitou seria descartada sem bloqueio, embora seja
+  conhecimento dele. Coberto por `test_downgrade_of_claims_guards_accepted_rows`, que também
+  verifica que uma sugestão não aceita não bloqueia.
+- **A contagem do `--rebuild` só soma o que foi projetado**, e o fixture de
+  `test_integration_graph.py` passou a limpar `claims`: a expectativa daquele teste era sensível
+  a resíduo de outra execução, o que o tornava dependente da ordem.
+- **Reafirmar depois da exclusão suave** ganhou teste
+  (`test_asserting_the_same_text_after_removal_creates_a_new_claim`), que é a razão de o índice
+  único ser parcial, e `RELATED_TO` passou a afirmar a idempotência no banco, não só a contagem
+  do grafo.
+
+Observação de ambiente, útil para quem for rodar a suíte: dois executores concorrentes contra o
+mesmo banco de teste se destroem — os fixtures apagam linhas globais e truncam o grafo, e o
+sintoma é `Entity could not be locked for updating` do AGE. A verificação final foi feita em
+banco isolado.
+
+Achados menores ainda abertos, registrados por honestidade: `AgeGraph.remove_annotation` e
+`AgeGraph.count_claims` não têm chamador; `list_claim_relations` recebe `annotation_id` que
+nenhum chamador usa; `create_claim`/`answer_question` levantam `DocumentNotFoundError` quando a
+anotação não existe, nome que descreve mal o caso; e os fixtures de integração convertem
+qualquer erro de preparação em `skip`.

@@ -48,7 +48,7 @@ Duas variáveis são obrigatórias para cifrar segredos em repouso: `NOTELY_AUTH
 backend/.venv/bin/python -c "from notely.core.security import SecretCipher; print(SecretCipher.generate_key())"
 ```
 
-A API lê o `.env` do diretório em que é iniciada, e o `./scripts/dev.sh` inicia a partir da raiz: um `.env` dentro de `backend/` seria ignorado ao usar o script. Trocar uma dessas chaves torna ilegíveis os segredos já gravados com ela, e o segundo fator ou a chave de modelo precisam ser cadastrados de novo.
+A API lê o `.env` do diretório em que é iniciada, e o `./scripts/dev.sh` inicia a partir da raiz: um `.env` dentro de `backend/` seria ignorado ao usar o script. Como os workers leem o ambiente do processo e não o `.env`, o script exporta essas duas linhas do arquivo (sem imprimir os valores e sem sobrescrever o que já estiver no ambiente), e é isso que permite à extração de conceitos decifrar a chave do usuário no ambiente local. Trocar uma dessas chaves torna ilegíveis os segredos já gravados com ela, e o segundo fator ou a chave de modelo precisam ser cadastrados de novo.
 
 ## Fluxo de upload
 
@@ -215,9 +215,15 @@ uv run --project backend python -m notely.workers.concepts
 uv run --project backend python -m notely.workers.concepts --backfill --once
 ```
 
-O provider padrão é determinístico e local (`heuristic`), sem rede. Para usar um modelo, a
-configuração é do servidor, por variáveis de ambiente — a chave que o usuário cadastra no
-assistente (`PUT /api/ai-config`) **não** alimenta esta extração, nem a sugestão de tema:
+O provider é resolvido **por dono da anotação**: a configuração de modelo que o usuário
+cadastrou para o assistente (`PUT /api/ai-config`, cifrada em `ai_model_configs`) extrai os
+conceitos dele, decifrada com `NOTELY_AI_SECRET_KEY`. É uma configuração, dois usos — não há
+segundo cadastro. A precedência é chave do dono → provider do servidor → heurístico, e a linha
+de `annotation_concepts` grava o provider e o modelo que de fato extraíram.
+
+O provider padrão continua determinístico e local (`heuristic`), sem rede. Para quem não
+cadastrou chave, o provider do servidor é configurado por variáveis de ambiente (a sugestão de
+tema segue esse caminho, não a configuração do assistente):
 
 ```bash
 NOTELY_CONCEPT_PROVIDER=anthropic NOTELY_CONCEPT_MODEL=claude-... NOTELY_CONCEPT_API_KEY=... \
@@ -225,8 +231,11 @@ NOTELY_CONCEPT_PROVIDER=anthropic NOTELY_CONCEPT_MODEL=claude-... NOTELY_CONCEPT
 ```
 
 Use `NOTELY_CONCEPT_PROVIDER=openai_compatible` com `NOTELY_CONCEPT_ENDPOINT` para
-endpoints compatíveis. Anotações anteriores a esta entrega não são extraídas
-automaticamente: use `--backfill`, que enfileira só as anotações ainda sem conceitos.
+endpoints compatíveis. Sem `NOTELY_AI_SECRET_KEY`, ou com a chave do dono ilegível, o worker
+avisa no log e degrada para o provider do servidor e, sem ele, para o heurístico — a anotação
+nunca fica presa por uma configuração de ambiente. Falha do modelo do dono em si preserva a
+anotação e deixa a entrega pendente para retry. Anotações anteriores a esta entrega não são
+extraídas automaticamente: use `--backfill`, que enfileira só as anotações ainda sem conceitos.
 
 Nada é promovido a conhecimento autoral sem aceite explícito do usuário: as relações
 nascem `suggested` e a promoção grava `accepted_at`. Ver

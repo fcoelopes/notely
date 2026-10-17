@@ -125,13 +125,33 @@ Reader, filtrados pelas obras da sessão aberta.
   mostra inferência distinguível, não conhecimento confirmado.
 - **Sem agrupamento semântico.** `ativos`, `assets` e `ativo` são conceitos distintos enquanto
   pgvector não entrar.
-- **A extração de conceitos é configurada no servidor, não pela sua chave.** Ver abaixo.
+- **A extração de conceitos pode usar a sua chave, mas a sugestão de tema não.** A configuração
+  de modelo do assistente (`PUT /api/ai-config`) alimenta a extração de conceitos do seu próprio
+  acervo; a sugestão de tema continua vindo de variáveis de ambiente do servidor. Ver abaixo.
 - Reextrair acumula arestas antigas da mesma anotação até um `--rebuild`, que reconcilia o grafo
   com o PostgreSQL.
 
-## Configurar o extrator de conceitos
+## Qual modelo extrai os conceitos
 
-Por variáveis de ambiente do **servidor**, e não pela chave que você cadastra no assistente:
+A extração resolve o provider **por dono da anotação**, nesta ordem:
+
+1. a configuração de modelo que o dono cadastrou para o assistente (`PUT /api/ai-config`, cifrada
+   em `ai_model_configs`), quando existe, está ligada e tem chave;
+2. o provider do **servidor**, por variáveis de ambiente;
+3. o heurístico local, determinístico e sem rede.
+
+Ou seja: cadastrar a sua chave melhora os conceitos do seu acervo. É uma configuração, dois usos —
+o mesmo modelo responde no assistente e extrai os conceitos —, e a linha de `annotation_concepts`
+registra o provider e o modelo que de fato extraíram (`<provider>:concepts` e o modelo do dono).
+
+O worker precisa de `NOTELY_AI_SECRET_KEY` para decifrar a sua chave; é a mesma variável que cifra
+o segredo do assistente. Sem ela, ou com a chave ilegível, a extração **avisa no log e cai** para o
+provider do servidor e, sem ele, para o heurístico: a anotação nunca fica presa por causa de uma
+configuração de ambiente. Com a configuração desligada o caminho é o mesmo, sem aviso — é o
+comportamento de quem não tem configuração. Já a falha do modelo em si (chave inválida, sem cota,
+provedor fora) preserva a anotação e deixa a entrega pendente para nova tentativa.
+
+Sem nenhuma chave cadastrada, o comportamento é o do servidor:
 
 ```bash
 NOTELY_CONCEPT_PROVIDER=anthropic NOTELY_CONCEPT_MODEL=claude-... NOTELY_CONCEPT_API_KEY=... \
@@ -141,11 +161,9 @@ NOTELY_CONCEPT_PROVIDER=anthropic NOTELY_CONCEPT_MODEL=claude-... NOTELY_CONCEPT
 Valores de `NOTELY_CONCEPT_PROVIDER`: `heuristic` (padrão, local, sem rede) ou `anthropic` e
 `openai_compatible`. Valem também `NOTELY_CONCEPT_ENDPOINT` e `NOTELY_CONCEPT_TIMEOUT_SECONDS`.
 
-**Atenção:** a configuração de modelo do usuário (`PUT /api/ai-config`, o BYOK do assistente,
-cifrado em `ai_model_configs`) alimenta o assistente de estudo e **não** a extração de conceitos
-nem a sugestão de tema. Cadastrar sua chave hoje não melhora os conceitos: quem faz isso é quem
-opera o servidor, pelas variáveis acima. Levar a chave do usuário até a extração é uma mudança
-possível, ainda não feita.
+**Atenção:** a sugestão de tema continua vindo de variáveis de ambiente do servidor, não da
+configuração do assistente. Ver [ADR 0005](adr/0005-concept-extraction-as-inference.md) e
+[ADR 0007](adr/0007-study-assistant-with-user-model.md).
 
 ## Onde isso vive
 

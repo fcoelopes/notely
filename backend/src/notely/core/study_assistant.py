@@ -7,6 +7,9 @@ A chamada ao modelo acontece fora da unidade de trabalho: o contexto é lido em 
 transação de leitura, a transação termina, e só então o provider é chamado. O contexto
 enviado é o mínimo necessário — trechos relevantes e as anotações do usuário, nunca o
 documento inteiro (PRD §18).
+
+A leitura da configuração de modelo do dono (`user_api_key` e `chat_provider_for`) é a
+mesma regra usada pela extração de conceitos: uma configuração, dois usos (ADR 0005).
 """
 
 from __future__ import annotations
@@ -217,28 +220,8 @@ class StudyAssistant:
             )
         if not config.api_key_encrypted:
             raise AssistantNotConfiguredError("the model provider has no stored key")
-        try:
-            api_key = self._cipher_required().decrypt(config.api_key_encrypted)
-        except SecurityError as exc:
-            raise AssistantConfigurationError(str(exc)) from exc
-
-        if config.provider is AIModelProvider.ANTHROPIC:
-            return (
-                AnthropicChatProvider(
-                    model=config.model,
-                    api_key=api_key,
-                    endpoint=config.base_url or AnthropicChatProvider.DEFAULT_ENDPOINT,
-                ),
-                config,
-            )
-        if not config.base_url:
-            raise AssistantNotConfiguredError(
-                "an OpenAI-compatible provider needs a base URL"
-            )
         return (
-            OpenAICompatibleChatProvider(
-                endpoint=config.base_url, model=config.model, api_key=api_key
-            ),
+            chat_provider_for(config, user_api_key(config, self._cipher_required())),
             config,
         )
 
@@ -248,6 +231,38 @@ class StudyAssistant:
                 "NOTELY_AI_SECRET_KEY is required to store a provider key"
             )
         return self._cipher
+
+
+def user_api_key(config: AIModelConfig, cipher: SecretCipher) -> str:
+    """Decifra a chave do provider que o dono cadastrou.
+
+    A chave em claro existe só em memória e não é registrada em log. É a mesma leitura
+    para o assistente e para a extração de conceitos: uma configuração, dois usos
+    (ADR 0005).
+    """
+    if not config.api_key_encrypted:
+        raise AssistantNotConfiguredError("the model provider has no stored key")
+    try:
+        return cipher.decrypt(config.api_key_encrypted)
+    except SecurityError as exc:
+        raise AssistantConfigurationError(str(exc)) from exc
+
+
+def chat_provider_for(config: AIModelConfig, api_key: str) -> ChatModelProvider:
+    """Monta o provider de chat da configuração do dono a partir da chave já decifrada."""
+    if config.provider is AIModelProvider.ANTHROPIC:
+        return AnthropicChatProvider(
+            model=config.model,
+            api_key=api_key,
+            endpoint=config.base_url or AnthropicChatProvider.DEFAULT_ENDPOINT,
+        )
+    if not config.base_url:
+        raise AssistantNotConfiguredError(
+            "an OpenAI-compatible provider needs a base URL"
+        )
+    return OpenAICompatibleChatProvider(
+        endpoint=config.base_url, model=config.model, api_key=api_key
+    )
 
 
 def _system_prompt() -> str:

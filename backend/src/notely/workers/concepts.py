@@ -3,6 +3,13 @@
 Conceito extraído é inferência de modelo, nunca dado autoral: as relações nascem
 `suggested` e com proveniência `ai_inference`, e só o aceite explícito do usuário as
 promove (AGENTS.md §1). O worker é idempotente e reprocessar não gasta modelo de novo.
+
+O provider é resolvido **por dono da anotação**, dentro do lote: a configuração de modelo
+que o usuário cadastrou para o assistente (`ai_model_configs`) extrai os conceitos dele,
+com a chave dele decifrada por `NOTELY_AI_SECRET_KEY`; sem configuração utilizável, valem
+o provider do servidor (`NOTELY_CONCEPT_*`) e, por fim, o heurístico. A proveniência
+gravada em `annotation_concepts` registra o provider e o modelo que de fato extraíram
+(ADR 0005).
 """
 
 from __future__ import annotations
@@ -11,6 +18,7 @@ import argparse
 import asyncio
 import logging
 import os
+from collections.abc import Callable
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, exists, or_, select
@@ -18,7 +26,13 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from notely.core.concepts import normalize_concept_name, relation_for
-from notely.core.models import AnnotationType, OutboxEvent, utc_now
+from notely.core.models import AIModelConfig, AnnotationType, OutboxEvent, utc_now
+from notely.core.security import SecretCipher, SecurityError
+from notely.core.study_assistant import (
+    AssistantError,
+    chat_provider_for,
+    user_api_key,
+)
 from notely.db.models import (
     AnnotationConceptRow,
     AnnotationRow,
@@ -33,7 +47,12 @@ from notely.db.outbox import (
     ClaimedEvent,
     SqlAlchemyOutboxStore,
 )
-from notely.providers.chat_model import AnthropicChatProvider, OpenAICompatibleChatProvider
+from notely.db.uow import SqlAlchemyUnitOfWork
+from notely.providers.chat_model import (
+    AnthropicChatProvider,
+    ChatModelProvider,
+    OpenAICompatibleChatProvider,
+)
 from notely.providers.concept_extraction import (
     ConceptExtractionContext,
     ConceptExtractionProvider,
@@ -50,6 +69,10 @@ PUBLISHED_EVENT = "concepts.extracted"
 EVENT_TYPES = frozenset({"annotation.created", REQUESTED_EVENT})
 DEFAULT_DATABASE_URL = "postgresql+asyncpg://notely:notely@localhost:5432/notely"
 DEFAULT_BACKFILL_LIMIT = 500
+
+# Como a configuração do dono vira provider de chat. O padrão é a regra compartilhada com o
+# assistente; é um colaborador injetável, como o `graph` ou o `storage` dos outros workers.
+ChatProviderFactory = Callable[[AIModelConfig, str], ChatModelProvider]
 
 
 async def extract_annotation(
@@ -187,13 +210,128 @@ def _annotation_id(event: ClaimedEvent) -> UUID:
     return UUID(str(event.payload.get("annotation_id", event.aggregate_id)))
 
 
+def _label(provider: ConceptExtractionProvider) -> str:
+    return f"{provider.name}/{provider.model}"
+
+
+class OwnerConceptProviders:
+    """Provider de extração por dono da anotação, com cache por lote.
+
+    A precedência é a do ADR 0005: a configuração de modelo do dono (a mesma do
+    assistente) → o provider do servidor → o heurístico. A chave cadastrada pelo usuário
+    é decifrada com `NOTELY_AI_SECRET_KEY`; se a chave do servidor faltar ou não decifrar,
+    o worker avisa e usa a alternativa em vez de deixar a entrega presa em retry por uma
+    configuração de ambiente. A chave em claro não é registrada em log nem guardada além do
+    provider que a usa.
+
+    O cache vale para um lote: a configuração é lida uma vez por dono, e uma mudança de
+    modelo passa a valer no lote seguinte.
+    """
+
+    def __init__(
+        self,
+        *,
+        sessions: async_sessionmaker[AsyncSession],
+        fallback: ConceptExtractionProvider,
+        secret_key: str | None = None,
+        chat_factory: ChatProviderFactory = chat_provider_for,
+    ) -> None:
+        self._sessions = sessions
+        self._fallback = fallback
+        self._secret_key = secret_key
+        self._chat_factory = chat_factory
+        self._providers: dict[UUID, ConceptExtractionProvider] = {}
+        self._cipher: SecretCipher | None = None
+        self._cipher_checked = False
+        self._cipher_failure = ""
+
+    async def for_user(self, user_id: UUID) -> ConceptExtractionProvider:
+        cached = self._providers.get(user_id)
+        if cached is not None:
+            return cached
+        provider = await self._resolve(user_id)
+        self._providers[user_id] = provider
+        return provider
+
+    async def _resolve(self, user_id: UUID) -> ConceptExtractionProvider:
+        async with SqlAlchemyUnitOfWork(self._sessions, user_id=user_id) as uow:
+            config = await uow.get_ai_model_config()
+        if config is None or not config.enabled:
+            # Quem não cadastrou chave (ou desligou a configuração) não muda de
+            # comportamento: segue o provider do servidor e, sem ele, o heurístico.
+            return self._fallback
+        if not config.api_key_encrypted:
+            logger.warning(
+                "ai model config of %s has no stored key; concept extraction falls back to %s",
+                user_id,
+                _label(self._fallback),
+            )
+            return self._fallback
+        cipher = self._cipher_or_none()
+        if cipher is None:
+            logger.warning(
+                "NOTELY_AI_SECRET_KEY is unusable (%s), so the model key of %s cannot be read; "
+                "concept extraction falls back to %s",
+                self._cipher_failure,
+                user_id,
+                _label(self._fallback),
+            )
+            return self._fallback
+        try:
+            chat = self._chat_factory(config, user_api_key(config, cipher))
+        except (AssistantError, SecurityError) as exc:
+            logger.warning(
+                "ai model config of %s is not usable (%s); concept extraction falls back to %s",
+                user_id,
+                exc,
+                _label(self._fallback),
+            )
+            return self._fallback
+        logger.info("concept extraction of %s uses the owner model %s", user_id, config.model)
+        return ModelConceptExtractionProvider(chat=chat)
+
+    def _cipher_or_none(self) -> SecretCipher | None:
+        """Uma única construção de `SecretCipher` por lote, com o motivo da falha guardado."""
+        if not self._cipher_checked:
+            self._cipher_checked = True
+            key = (
+                self._secret_key
+                if self._secret_key is not None
+                else os.environ.get("NOTELY_AI_SECRET_KEY", "")
+            )
+            if not key:
+                self._cipher_failure = "NOTELY_AI_SECRET_KEY is not set"
+            else:
+                try:
+                    self._cipher = SecretCipher(key)
+                except SecurityError as exc:
+                    self._cipher_failure = str(exc)
+        return self._cipher
+
+
 async def run_batch(
     *,
     store: SqlAlchemyOutboxStore,
     sessions: async_sessionmaker[AsyncSession],
-    provider: ConceptExtractionProvider,
+    provider: ConceptExtractionProvider | None = None,
+    secret_key: str | None = None,
+    chat_factory: ChatProviderFactory = chat_provider_for,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> dict[str, int]:
+    """Processa um lote do consumidor `concepts`.
+
+    O provider é resolvido por dono da anotação: `provider` é o provider do **servidor**,
+    usado quando o dono não tem configuração de modelo utilizável (sem ele, o heurístico
+    de `build_provider()`). `secret_key` e `chat_factory` existem para injetar a chave do
+    servidor que decifra e a montagem do provider de chat nos testes.
+    """
+    server_provider = provider if provider is not None else build_provider()
+    owners = OwnerConceptProviders(
+        sessions=sessions,
+        fallback=server_provider,
+        secret_key=secret_key,
+        chat_factory=chat_factory,
+    )
     stats = {"claimed": 0, "extracted": 0, "relations": 0, "failed": 0}
     async with sessions() as session:
         claimed = await store.claim(
@@ -214,21 +352,25 @@ async def run_batch(
                 if annotation is None or annotation.deleted_at is not None:
                     processed.append(event.id)
                     continue
+                owner_provider = await owners.for_user(annotation.user_id)
                 if await _has_relations(session, annotation.id):
                     # Já extraído: reprocessar não gasta modelo nem duplica relação, mas
                     # republica para o grafo alcançar o estado do PostgreSQL.
                     await _publish_extraction(
-                        session, annotation.id, user_id=annotation.user_id, provider=provider
+                        session, annotation.id, user_id=annotation.user_id, provider=owner_provider
                     )
                 else:
                     created = await extract_annotation(
-                        session=session, provider=provider, annotation=annotation
+                        session=session, provider=owner_provider, annotation=annotation
                     )
                     stats["extracted"] += 1
                     stats["relations"] += created
                     if created:
                         await _publish_extraction(
-                            session, annotation.id, user_id=annotation.user_id, provider=provider
+                            session,
+                            annotation.id,
+                            user_id=annotation.user_id,
+                            provider=owner_provider,
                         )
             except ConceptExtractionUnavailableError as exc:
                 # Falha do provider fica pendente para retry com backoff; a anotação
@@ -259,8 +401,9 @@ async def enqueue_missing_annotations(
 ) -> int:
     """Enfileira extração para anotações ainda sem conceitos (backfill explícito).
 
-    A pendência é checada na entrega do consumidor, e a chave do evento inclui o provider:
-    trocar de modelo permite reextrair o acervo, sem duplicar um pedido já na fila.
+    A pendência é checada na entrega do consumidor, e a chave do evento inclui o provider
+    do servidor: trocar de modelo permite reextrair o acervo, sem duplicar um pedido já na
+    fila. A chave é só do pedido — quem extrai é o provider do dono de cada anotação.
     """
     has_relations = exists().where(AnnotationConceptRow.annotation_id == AnnotationRow.id)
     undelivered = ~exists().where(
@@ -319,13 +462,20 @@ async def run_forever(
     *,
     store: SqlAlchemyOutboxStore,
     sessions: async_sessionmaker[AsyncSession],
-    provider: ConceptExtractionProvider,
+    provider: ConceptExtractionProvider | None = None,
+    secret_key: str | None = None,
+    chat_factory: ChatProviderFactory = chat_provider_for,
     batch_size: int = DEFAULT_BATCH_SIZE,
     interval_seconds: float = 2.0,
 ) -> None:
     while True:
         stats = await run_batch(
-            store=store, sessions=sessions, provider=provider, batch_size=batch_size
+            store=store,
+            sessions=sessions,
+            provider=provider,
+            secret_key=secret_key,
+            chat_factory=chat_factory,
+            batch_size=batch_size,
         )
         if stats["claimed"]:
             logger.info("batch processed %s", stats)
@@ -334,7 +484,7 @@ async def run_forever(
 
 
 def build_provider() -> ConceptExtractionProvider:
-    """Provider por configuração. Sem configuração, o heurístico mantém o fluxo local."""
+    """Provider do servidor por configuração. Sem ela, o heurístico mantém o fluxo local."""
     kind = os.environ.get("NOTELY_CONCEPT_PROVIDER", "heuristic")
     if kind == "heuristic":
         return HeuristicConceptExtractionProvider()
@@ -386,21 +536,23 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     async def run() -> None:
-        provider = build_provider()
+        server_provider = build_provider()
         engine = create_async_engine(arguments.database_url, pool_pre_ping=True)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         store = SqlAlchemyOutboxStore(sessions)
         try:
             if arguments.backfill:
                 async with sessions() as session:
-                    queued = await enqueue_missing_annotations(session, provider=provider)
+                    queued = await enqueue_missing_annotations(
+                        session, provider=server_provider
+                    )
                     await session.commit()
                 logger.info("concept backfill queued %s annotations", queued)
             if arguments.once:
                 stats = await run_batch(
                     store=store,
                     sessions=sessions,
-                    provider=provider,
+                    provider=server_provider,
                     batch_size=arguments.batch_size,
                 )
                 logger.info("batch processed %s", stats)
@@ -408,7 +560,7 @@ def main() -> None:
             await run_forever(
                 store=store,
                 sessions=sessions,
-                provider=provider,
+                provider=server_provider,
                 batch_size=arguments.batch_size,
                 interval_seconds=arguments.interval,
             )

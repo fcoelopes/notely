@@ -13,7 +13,7 @@ Extrair conceitos das anotações do usuário com um modelo plugável e projetá
 - Conceitos extraídos entram no grafo **marcados como inferência** (`ai_inference`), sempre distinguíveis do conhecimento autoral.
 - A promoção de uma relação sugerida a relação autoral exige **aceite explícito**; nada é aceito automaticamente (AGENTS.md §1).
 - Escopo desta entrega: nós `Concept` e arestas `REFERS_TO` (anotação → conceito) e `QUESTIONS` (dúvida → conceito). Nós `Claim` e as arestas `SUPPORTS`/`CONTRADICTS`/`RELATED_TO`/`ANSWERED_BY` ficam para uma entrega seguinte.
-- Provider plugável, escolhido por configuração do **servidor** (`NOTELY_CONCEPT_PROVIDER`, `NOTELY_CONCEPT_MODEL`, `NOTELY_CONCEPT_API_KEY`, `NOTELY_CONCEPT_ENDPOINT`). Não é BYOK: a chave que o usuário cadastra no assistente não alimenta esta extração, e a sugestão de tema também é configurada por ambiente.
+- Provider plugável, resolvido **por dono da anotação**: a configuração de modelo que o usuário cadastrou para o assistente (`ai_model_configs`, o BYOK do [ADR 0007](../docs/adr/0007-study-assistant-with-user-model.md)) extrai os conceitos dele. Sem configuração utilizável, valem o provider do **servidor** (`NOTELY_CONCEPT_PROVIDER`, `NOTELY_CONCEPT_MODEL`, `NOTELY_CONCEPT_API_KEY`, `NOTELY_CONCEPT_ENDPOINT`) e, por fim, o heurístico. A sugestão de tema continua configurada por ambiente. Ver [plano da chave do usuário](conceitos-com-chave-do-usuario.md) e [ADR 0005](../docs/adr/0005-concept-extraction-as-inference.md).
 
 ## Camada de provider
 
@@ -21,7 +21,7 @@ Extrair conceitos das anotações do usuário com um modelo plugável e projetá
 - `providers/concept_extraction.py`: protocolo `ConceptExtractionProvider` e duas implementações:
   - `HeuristicConceptExtractionProvider` — determinístico e sem rede, mantém o fluxo utilizável offline e testável;
   - `ModelConceptExtractionProvider` — usa um `ChatModelProvider` e um prompt que exige JSON e proíbe inventar conteúdo ausente da anotação.
-- O provider é escolhido por configuração; sem configuração, permanece o heurístico.
+- O provider é resolvido por dono da anotação (chave do usuário → configuração do servidor → heurístico); sem nada configurado, permanece o heurístico.
 
 ## Domínio e persistência
 
@@ -60,7 +60,7 @@ O worker de grafo permanece o único escritor no AGE, mantendo a projeção deri
 ## Riscos e rollback
 
 - Custo: com provider pago, cada anotação consome tokens. O padrão heurístico é local e gratuito, e o adapter externo só é ativado por configuração explícita. O consumidor `concepts` começa do zero graças à adoção do histórico.
-- Qualidade: conceitos extraídos podem ser fracos; é exatamente por isso que entram como inferência não autoral, com o usuário decidindo o que promover.
+- Qualidade: conceitos extraídos podem ser fracos; é exatamente por isso que entram como inferência não autoral, com o usuário decidindo o que promover. Com a chave do dono, o custo e a qualidade passam a ser os do modelo que ele escolheu; a proveniência gravada diz qual foi.
 - Rollback: desligar o worker de conceitos interrompe a extração sem afetar anotações; as tabelas e a projeção no grafo são reconstruíveis.
 
 ## Fora de escopo
@@ -78,7 +78,7 @@ O worker de grafo permanece o único escritor no AGE, mantendo a projeção deri
 
 ## Limitações conhecidas
 
-- O extrator heurístico é local e gratuito, mas a qualidade é limitada: ele ranqueia termos por frequência e não distingue conceito de verbo comum — na base real apareceram coisas como `natureza` e `afeta`. A qualidade vem de configurar um provider de modelo por variável de ambiente do servidor; o heurístico existe para manter o fluxo utilizável offline e testável.
+- O extrator heurístico é local e gratuito, mas a qualidade é limitada: ele ranqueia termos por frequência e não distingue conceito de verbo comum — na base real apareceram coisas como `natureza` e `afeta`. A qualidade vem de usar um provider de modelo: o do dono, cadastrado para o assistente, ou o do servidor por variável de ambiente; o heurístico existe para manter o fluxo utilizável offline e testável.
 - Reextrair com outro provider republica o evento de projeção, mas o grafo é atualizado de forma aditiva: arestas antigas da mesma anotação permanecem até um `--rebuild`, que reconcilia o grafo com o PostgreSQL.
 - Não há agrupamento semântico: "ativos", "assets" e "ativo" são conceitos distintos. A fusão por similaridade depende de pgvector, que segue pendente.
 - A interface de aceite/rejeição não existe nesta entrega; o estado está persistido e é consultável.

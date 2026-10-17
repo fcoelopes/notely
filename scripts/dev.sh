@@ -42,6 +42,36 @@ if [[ -n "${NOTELY_DATABASE_URL:-}" && "$NOTELY_DATABASE_URL" != "$local_databas
 fi
 export NOTELY_DATABASE_URL="$local_database_url"
 
+# Segredos de cifra em repouso. A API os lê do `.env` pelo pydantic-settings, mas os
+# workers leem o ambiente do processo: sem exportar, a extração de conceitos não decifra a
+# chave de modelo do usuário. Lê só as duas linhas, sem `source` do arquivo inteiro e sem
+# sobrescrever o que já está no ambiente; nada é impresso.
+export_env_secret() {
+  local name=$1
+  local line value
+  if [[ -n "${!name:-}" || ! -f "$repo_root/.env" ]]; then
+    return 0
+  fi
+  line=$(grep -E "^[[:space:]]*${name}[[:space:]]*=" "$repo_root/.env" | tail -n 1) || return 0
+  value=${line#*=}
+  value=${value%$'\r'}
+  value=${value#"${value%%[![:space:]]*}"}
+  value=${value%"${value##*[![:space:]]}"}
+  if [[ ${#value} -ge 2 ]]; then
+    case "$value" in
+      \"*\") value=${value:1:${#value}-2} ;;
+      \'*\') value=${value:1:${#value}-2} ;;
+    esac
+  fi
+  if [[ -n "$value" ]]; then
+    export "$name=$value"
+  fi
+}
+for env_secret in NOTELY_AUTH_SECRET_KEY NOTELY_AI_SECRET_KEY; do
+  export_env_secret "$env_secret"
+done
+unset env_secret
+
 if [[ "$mode" == start ]]; then
   for executable in npm; do
     command -v "$executable" > /dev/null || { printf 'Comando necessário ausente: %s\n' "$executable" >&2; exit 1; }

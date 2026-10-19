@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { ApiError } from "./lib/api";
 import type {
+  AIModelConfig,
+  AIModelConfigInput,
   Annotation,
   ClaimEvidence,
   ConceptOverview,
@@ -68,6 +70,9 @@ const api = vi.hoisted(() => ({
   listConcepts: vi.fn(),
   createConceptRelation: vi.fn(),
   deleteClaimRelation: vi.fn(),
+  getAIModelConfig: vi.fn(),
+  saveAIModelConfig: vi.fn(),
+  deleteAIModelConfig: vi.fn(),
 }));
 const readPageCount = vi.hoisted(() => vi.fn());
 
@@ -269,6 +274,7 @@ let titles: Record<string, string>;
 let savedAnnotations: Annotation[];
 let currentClaims: ClaimEvidence[];
 let currentConcepts: ConceptOverview[];
+let currentAIConfig: AIModelConfig | null;
 let relationSequence: number;
 
 async function startSession(
@@ -304,6 +310,7 @@ describe("App", () => {
     savedAnnotations = [];
     currentClaims = [];
     currentConcepts = [];
+    currentAIConfig = null;
     relationSequence = 0;
     Object.values(api).forEach((fn) => fn.mockReset());
     readPageCount.mockReset();
@@ -424,6 +431,23 @@ describe("App", () => {
     api.getQuestionSources.mockResolvedValue({
       annotation_id: "annotation-1", study_session_id: "session-1",
       status: "pending", version: 1, last_error: null, sources: [],
+    });
+    // A configuração de modelo vive no servidor e nunca devolve a chave: aqui a leitura
+    // reflete o que foi gravado, e a gravação sem chave mantém a que já existia.
+    api.getAIModelConfig.mockImplementation(() => Promise.resolve(currentAIConfig));
+    api.saveAIModelConfig.mockImplementation((input: AIModelConfigInput) => {
+      currentAIConfig = {
+        provider: input.provider,
+        model: input.model,
+        base_url: input.base_url ?? null,
+        enabled: input.enabled,
+        has_key: Boolean(input.api_key) || (currentAIConfig?.has_key ?? false),
+      };
+      return Promise.resolve(currentAIConfig);
+    });
+    api.deleteAIModelConfig.mockImplementation(() => {
+      currentAIConfig = null;
+      return Promise.resolve(undefined);
     });
     api.startReadingSession.mockImplementation((input: { document_id: string; page_number: number | null; filename: string | null }) =>
       Promise.resolve({
@@ -1385,6 +1409,141 @@ describe("App", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Lista de conceitos indisponível.");
     expect(screen.getByText("Trecho")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
+    expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
+  });
+
+  it("configures the model from the sidebar and never shows the key again", async () => {
+    await startSession({ theme: "tema", openPanels: false });
+    await waitFor(() => expect(api.getAIModelConfig).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Modelo de IA");
+
+    // Sem configuração: a leitura responde 404, que vira ausência de modelo, e o
+    // formulário aparece vazio.
+    expect(await screen.findByText("Nenhum modelo de IA configurado.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Modelo")).toHaveValue("");
+    expect(screen.getByLabelText("Chave da API")).toHaveValue("");
+
+    fireEvent.change(screen.getByLabelText("Modelo"), {
+      target: { value: "claude-sonnet-4-5" },
+    });
+    fireEvent.change(screen.getByLabelText("Chave da API"), {
+      target: { value: "chave-ficticia-de-teste" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
+
+    await waitFor(() => expect(api.saveAIModelConfig).toHaveBeenCalledTimes(1));
+    expect(api.saveAIModelConfig).toHaveBeenCalledWith({
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      base_url: null,
+      enabled: true,
+      api_key: "chave-ficticia-de-teste",
+    });
+
+    // O painel passa a mostrar o que o servidor confirmou, só com o fato de existir chave.
+    expect(await screen.findByText("gravada no servidor")).toBeInTheDocument();
+    expect(screen.getByText("claude-sonnet-4-5")).toBeInTheDocument();
+    expect(screen.getByLabelText("Chave da API")).toHaveValue("");
+    expect(document.body.textContent).not.toContain("chave-ficticia-de-teste");
+  });
+
+  it("keeps the stored key when saving without filling the key field", async () => {
+    currentAIConfig = {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      base_url: null,
+      enabled: true,
+      has_key: true,
+    };
+    await startSession({ theme: "tema", openPanels: false });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Modelo de IA");
+    expect(await screen.findByText("claude-sonnet-4-5")).toBeInTheDocument();
+    expect(screen.getByText("gravada no servidor")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Modelo"), {
+      target: { value: "claude-opus-4-5" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar configuração" }));
+
+    await waitFor(() => expect(api.saveAIModelConfig).toHaveBeenCalledTimes(1));
+    expect(api.saveAIModelConfig.mock.calls[0][0].api_key).toBeUndefined();
+    // Os campos atualizam e a chave continua gravada, sem ter sido redigitada.
+    expect(await screen.findByText("claude-opus-4-5")).toBeInTheDocument();
+    expect(screen.getByText("gravada no servidor")).toBeInTheDocument();
+  });
+
+  it("does not send openai_compatible without a base url", async () => {
+    await startSession({ theme: "tema", openPanels: false });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Modelo de IA");
+    await screen.findByText("Nenhum modelo de IA configurado.");
+
+    fireEvent.change(screen.getByLabelText("Provedor do modelo"), {
+      target: { value: "openai_compatible" },
+    });
+    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "llama3.1" } });
+    const save = screen.getByRole("button", { name: "Cadastrar modelo" });
+    expect(save).toBeDisabled();
+    expect(screen.getByText(/exige a base URL antes de gravar/)).toBeInTheDocument();
+    fireEvent.click(save);
+    expect(api.saveAIModelConfig).not.toHaveBeenCalled();
+  });
+
+  it("removes the configuration after confirmation and returns to the empty state", async () => {
+    currentAIConfig = {
+      provider: "openai_compatible",
+      model: "llama3.1",
+      base_url: "http://localhost:11434/v1",
+      enabled: true,
+      has_key: true,
+    };
+    await startSession({ theme: "tema", openPanels: false });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Modelo de IA");
+    expect(await screen.findByText("http://localhost:11434/v1")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remover configuração" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+    expect(api.deleteAIModelConfig).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remover configuração" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar remoção" }));
+
+    await waitFor(() => expect(api.deleteAIModelConfig).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Nenhum modelo de IA configurado.")).toBeInTheDocument();
+    // O formulário volta vazio depois que a configuração removida deixa de existir.
+    await waitFor(() => expect(screen.getByLabelText("Modelo")).toHaveValue(""));
+    // A leitura seguinte responde 404, que a tela trata como ausência de configuração.
+    await expect(api.getAIModelConfig()).resolves.toBeNull();
+  });
+
+  it("shows the configuration failure and keeps reading", async () => {
+    api.saveAIModelConfig.mockRejectedValue(
+      new ApiError(503, "Não foi possível gravar a configuração."),
+    );
+    await startSession({
+      theme: "tema",
+      documents: [sessionDocument("doc-1", "Artigo", 0, 3)],
+      openPanels: false,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Modelo de IA");
+    await screen.findByText("Nenhum modelo de IA configurado.");
+
+    fireEvent.change(screen.getByLabelText("Modelo"), {
+      target: { value: "modelo-que-nao-grava" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
+
+    await waitFor(() => expect(api.saveAIModelConfig).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Não foi possível gravar a configuração.",
+    );
+    // O que foi digitado continua no formulário, e a leitura segue funcionando.
+    expect(screen.getByLabelText("Modelo")).toHaveValue("modelo-que-nao-grava");
     fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
     expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
   });

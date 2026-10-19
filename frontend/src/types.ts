@@ -279,3 +279,27 @@ export interface ConceptOverview {
   documents: ConceptReference[];
   associations: ConceptAssociation[];
 }
+
+/** Provedores aceitos pela API. `openai_compatible` cobre Ollama, LM Studio e gateways. */
+export type AIModelProvider = "anthropic" | "openai_compatible";
+
+/**
+ * Configuração de modelo do dono. A chave nunca chega ao cliente: a API devolve apenas
+ * `has_key`, o fato de existir uma chave gravada e cifrada em repouso.
+ */
+export interface AIModelConfig {
+  provider: AIModelProvider;
+  model: string;
+  base_url: string | null;
+  enabled: boolean;
+  has_key: boolean;
+}
+
+/** O que a tela envia ao gravar. Sem `api_key`, a chave já gravada é mantida. */
+export interface AIModelConfigInput {
+  provider: AIModelProvider;
+  model: string;
+  api_key?: string;
+  base_url?: string | null;
+  enabled: boolean;
+}

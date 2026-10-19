@@ -33,7 +33,8 @@ npm run build
 - sugestões de tema de IA como sugestão pendente, com provider e modelo visíveis, aplicadas apenas por aceite explícito do usuário;
 - fontes sugeridas para dúvidas criadas numa sessão, com estado assíncrono, excerto verificável, prévia da página e navegação explícita;
 - afirmações do leitor a partir de um trecho anotado, com evidência visível, remoção e reafirmação que reaproveita a afirmação existente;
-- conceitos das obras da sessão marcados como inferência, com a contagem de trechos e a associação autoral entre dois deles.
+- conceitos das obras da sessão marcados como inferência, com a contagem de trechos e a associação autoral entre dois deles;
+- painel de configuração do modelo de IA na barra lateral, com provedor, modelo, base URL, existência de chave e remoção confirmada.
 
 O download autenticado (multi-usuário) do PDF armazenado fica para quando houver escopo por usuário.
 
@@ -127,3 +128,29 @@ O backend expõe `GET /api/concepts` para essa tela; nada foi aceito automaticam
 associação entre dois conceitos é autoral. Ver
 [plano](../future/tela-afirmacoes-reader.md) e
 [issue #22](https://github.com/fcoelopes/notely/issues/22).
+
+## Modelo de IA pela tela (issue #24)
+
+O painel **Modelo de IA** fica na barra lateral, em `<details>` como os demais, e é a única
+forma de cadastrar o modelo: não é mais preciso usar `curl`. Ele mostra o que a API devolve —
+provedor, modelo, base URL, se existe chave gravada e se o modelo está ativo — e permite
+gravar, atualizar e remover a configuração.
+
+- `GET /api/ai-config` respondendo `404` significa **sem configuração**, não erro: o painel
+  mostra o formulário vazio e diz que nenhum modelo está configurado.
+- `PUT /api/ai-config` grava `provider`, `model`, `base_url`, `enabled` e, quando houver,
+  `api_key`. O campo de chave é `type="password"`, com opção de mostrar, e nasce sempre
+  vazio: deixado vazio, a chave já gravada é **mantida**, e a interface diz isso. Depois de
+  salvar com sucesso o campo é limpo do estado.
+- `provider` aceita `anthropic` e `openai_compatible`. O segundo cobre Ollama, LM Studio,
+  vLLM e gateways compatíveis e **exige a base URL antes do envio**; o primeiro usa o
+  endpoint oficial e dispensa.
+- `DELETE /api/ai-config` remove a configuração, sempre depois da confirmação no próprio
+  painel, e a leitura seguinte volta a responder `404`.
+
+A chave nunca entra no estado da tela, no log, em URL ou em `localStorage`: a API só devolve
+`has_key`, e as mensagens de erro não a repetem. Como no marcador de página, o estado local
+só muda depois do sucesso da API; uma falha aparece junto ao formulário, mantém o que foi
+digitado e não impede ler, navegar ou anotar. Ver
+[plano](../future/tela-modelo-de-ia.md) e
+[issue #24](https://github.com/fcoelopes/notely/issues/24).

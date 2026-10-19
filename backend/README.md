@@ -354,6 +354,14 @@ POST   /api/study-assistant/chat   pergunta; com study_session_id a resposta é 
 Sem `study_session_id` é chat livre, e a resposta traz `grounded: false` e nenhuma fonte.
 Com sessão, a resposta cita documento e página e informa `provider` e `model`.
 
+A leitura da configuração responde `404` quando não há modelo cadastrado: é ausência de
+configuração, não falha, e o cliente trata assim. No `PUT`, `api_key` ausente, nula ou vazia
+**mantém** a chave já gravada, então trocar modelo ou base URL não exige redigitar o
+segredo; `provider` aceita exatamente `anthropic` ou `openai_compatible`, e só o segundo
+exige `base_url`. A configuração deixou de ser feita por `curl`: a tela do Reader cadastra,
+atualiza e remove o modelo (issue #24), e o
+[README do frontend](../frontend/README.md) descreve o painel.
+
 A resposta é inferência de modelo e **não é persistida**: ela não vira anotação nem
 conhecimento autoral. O contexto enviado é o mínimo necessário — o documento integral não
 sai daqui. Ver [ADR 0007](../docs/adr/0007-study-assistant-with-user-model.md).

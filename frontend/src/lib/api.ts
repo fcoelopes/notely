@@ -1,5 +1,7 @@
 import type {
   Account,
+  AIModelConfig,
+  AIModelConfigInput,
   Annotation,
   AnnotationPosition,
   AnnotationType,
@@ -338,4 +340,30 @@ export function confirmMfaEnrollment(code: string): Promise<{ recovery_codes: st
 
 export function disableMfa(password: string): Promise<void> {
   return request("/api/auth/mfa/disable", { method: "POST", body: JSON.stringify({ password }) });
+}
+
+/**
+ * Configuração do modelo de IA do dono. A API responde `404` quando não há configuração:
+ * isso é ausência de modelo, não falha, e vira `null` em vez de exceção. A chave nunca é
+ * devolvida — só o fato de existir (`has_key`).
+ */
+export async function getAIModelConfig(): Promise<AIModelConfig | null> {
+  try {
+    return await request<AIModelConfig>("/api/ai-config");
+  } catch (caught) {
+    if (caught instanceof ApiError && caught.status === 404) return null;
+    throw caught;
+  }
+}
+
+/**
+ * Grava a configuração. `api_key` ausente, nula ou vazia mantém a chave já gravada: trocar
+ * modelo ou base URL não exige redigitar o segredo.
+ */
+export function saveAIModelConfig(input: AIModelConfigInput): Promise<AIModelConfig> {
+  return request("/api/ai-config", { method: "PUT", body: JSON.stringify(input) });
+}
+
+export function deleteAIModelConfig(): Promise<void> {
+  return request("/api/ai-config", { method: "DELETE" });
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
+import { AIModelPanel } from "./components/AIModelPanel";
 import { AnnotationPanel } from "./components/AnnotationPanel";
 import { ClaimPanel } from "./components/ClaimPanel";
 import { CommentComposer } from "./components/CommentComposer";
@@ -18,12 +19,14 @@ import {
   createClaim,
   createConceptRelation,
   createStudySession,
+  deleteAIModelConfig,
   deleteClaim,
   deleteClaimRelation,
   deleteDocumentBookmark,
   currentAccount,
   detachDocumentFromSession,
   documentContentUrl,
+  getAIModelConfig,
   getStudySession,
   getReadingProgress,
   listAnnotations,
@@ -36,6 +39,7 @@ import {
   recordViewedPage,
   rejectThemeSuggestion,
   requestThemeSuggestion,
+  saveAIModelConfig,
   setStudySessionTheme,
   setDocumentBookmark,
   setUnauthorizedHandler,
@@ -46,6 +50,8 @@ import { readPageCount } from "./lib/pdf";
 import { useReadingSession } from "./lib/useReadingSession";
 import type {
   Account,
+  AIModelConfig,
+  AIModelConfigInput,
   Annotation,
   AnnotationType,
   ClaimEvidence,
@@ -77,6 +83,11 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
   const [conceptsError, setConceptsError] = useState<string | null>(null);
   const [claimsBusy, setClaimsBusy] = useState(false);
   const [conceptsBusy, setConceptsBusy] = useState(false);
+  const [aiConfig, setAIConfig] = useState<AIModelConfig | null>(null);
+  const [aiConfigLoading, setAIConfigLoading] = useState(true);
+  const [aiConfigBusy, setAIConfigBusy] = useState(false);
+  const [aiConfigError, setAIConfigError] = useState<string | null>(null);
+  const [aiConfigNotice, setAIConfigNotice] = useState<string | null>(null);
   const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null);
   const [localUrls, setLocalUrls] = useState<Record<string, string>>({});
   const [annotationsByDocument, setAnnotationsByDocument] = useState<Record<string, Annotation[]>>({});
@@ -110,16 +121,32 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
     }
   }, []);
 
+  /**
+   * Configuração do modelo de IA: `null` é ausência de configuração (a API responde `404`),
+   * não erro. Falhar aqui vira mensagem no painel e não impede ler, navegar ou anotar.
+   */
+  const refreshAIConfig = useCallback(async () => {
+    try {
+      setAIConfig(await getAIModelConfig());
+      setAIConfigError(null);
+    } catch (caught) {
+      setAIConfigError(describeError(caught));
+    } finally {
+      setAIConfigLoading(false);
+    }
+  }, []);
+
   const refreshLibrary = useCallback(async () => {
     try {
       const [library, openSessions] = await Promise.all([listDocuments(), listStudySessions()]);
       setDocuments(library);
       setSessions(openSessions);
       void refreshProgress();
+      void refreshAIConfig();
     } catch (caught) {
       setError(describeError(caught));
     }
-  }, [refreshProgress]);
+  }, [refreshAIConfig, refreshProgress]);
 
   useEffect(() => {
     void refreshLibrary();
@@ -254,6 +281,44 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
       setConceptsError(null);
     } catch (caught) {
       setConceptsError(describeError(caught));
+    }
+  }, []);
+
+  const handleSaveAIConfig = useCallback(
+    async (input: AIModelConfigInput): Promise<boolean> => {
+      setAIConfigBusy(true);
+      setAIConfigError(null);
+      setAIConfigNotice(null);
+      try {
+        const saved = await saveAIModelConfig(input);
+        setAIConfig(saved);
+        setAIConfigNotice("Configuração salva. O assistente e a extração passam a usar este modelo.");
+        return true;
+      } catch (caught) {
+        setAIConfigError(describeError(caught));
+        return false;
+      } finally {
+        setAIConfigBusy(false);
+      }
+    },
+    [],
+  );
+
+  const handleRemoveAIConfig = useCallback(async (): Promise<boolean> => {
+    setAIConfigBusy(true);
+    setAIConfigError(null);
+    setAIConfigNotice(null);
+    try {
+      await deleteAIModelConfig();
+      // Sem configuração, a tela volta ao estado inicial e a leitura da API responde 404.
+      setAIConfig(null);
+      setAIConfigNotice("Configuração removida. Nenhum modelo está configurado.");
+      return true;
+    } catch (caught) {
+      setAIConfigError(describeError(caught));
+      return false;
+    } finally {
+      setAIConfigBusy(false);
     }
   }, []);
 
@@ -945,6 +1010,19 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
             session={session}
             suggesting={suggesting}
           />
+          </details>
+          <details className="session-settings">
+            <summary>Modelo de IA</summary>
+            <AIModelPanel
+              busy={aiConfigBusy}
+              config={aiConfig}
+              error={aiConfigError}
+              loading={aiConfigLoading}
+              notice={aiConfigNotice}
+              onReload={() => void refreshAIConfig()}
+              onRemove={handleRemoveAIConfig}
+              onSave={handleSaveAIConfig}
+            />
           </details>
           <AnnotationPanel
             annotations={activeAnnotations}

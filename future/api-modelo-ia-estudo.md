@@ -77,4 +77,8 @@ Permitir que o usuário plugue o próprio modelo de IA (Claude ou GPT, com chave
 
 - A recuperação é lexical e restrita a uma sessão de estudo: não há busca no acervo inteiro nem similaridade semântica (pgvector segue pendente).
 - Não há streaming nem histórico da conversa; a resposta é instruída a citar, mas não é verificada automaticamente contra o texto.
-- A interface do Reader ainda não expõe o assistente.
+- A interface do Reader ainda não expõe a conversa com o assistente. A **configuração** do
+  modelo passou a ter tela no Reader na [issue #24](https://github.com/fcoelopes/notely/issues/24)
+  ([plano](tela-modelo-de-ia.md)), então cadastrar a chave não exige mais `curl`; perguntar
+  ao assistente pela interface continua pendente.
+

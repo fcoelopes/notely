@@ -345,8 +345,9 @@ definida no `.env`, e nunca é devolvida pela API.
 
 ```text
 GET    /api/ai-config              consulta a configuração (informa has_key, nunca a chave)
-PUT    /api/ai-config              define provider, modelo, chave e base URL
+PUT    /api/ai-config              define provider, modelo, chave e endpoint
 DELETE /api/ai-config              limpa a configuração
+POST   /api/ai-config/models       lista os modelos do provedor; não grava nada
 POST   /api/study-assistant/chat   pergunta; com study_session_id a resposta é ancorada
 ```
 
@@ -356,11 +357,24 @@ Com sessão, a resposta cita documento e página e informa `provider` e `model`.
 
 A leitura da configuração responde `404` quando não há modelo cadastrado: é ausência de
 configuração, não falha, e o cliente trata assim. No `PUT`, `api_key` ausente, nula ou vazia
-**mantém** a chave já gravada, então trocar modelo ou base URL não exige redigitar o
+**mantém** a chave já gravada, então trocar modelo ou endpoint não exige redigitar o
 segredo; `provider` aceita exatamente `anthropic` ou `openai_compatible`, e só o segundo
-exige `base_url`. A configuração deixou de ser feita por `curl`: a tela do Reader cadastra,
-atualiza e remove o modelo (issue #24), e o
+exige `base_url`, que é a URL completa de `/chat/completions`. A configuração deixou de ser
+feita por `curl`: a tela do Reader cadastra, atualiza e remove o modelo (issue #24), e o
 [README do frontend](../frontend/README.md) descreve o painel.
+
+`POST /api/ai-config/models` recebe `{provider, api_key?, base_url?}` e devolve
+`{models: [{id, display_name?}]}` — os modelos que o próprio provedor oferece (issue #25). A
+rota **não grava nada**: serve para a tela oferecer a escolha em vez de exigir o nome
+digitado. Sem `api_key`, a chave já gravada é decifrada e usada, com a mesma semântica do
+`PUT`, e a chave digitada vale só para a chamada. `anthropic` consulta
+`https://api.anthropic.com/v1/models` com `x-api-key` e `anthropic-version`, os mesmos
+headers do adapter de chat. `openai_compatible` deriva a URL do endpoint guardado trocando o
+sufixo `/chat/completions` por `/models`; o endpoint sem esse sufixo recebe `422` com o
+formato esperado, em vez de uma URL adivinhada. Sem configuração nem chave a resposta é
+`409`, e falha do provedor é `502`. A chave nunca aparece em mensagem de erro, log ou
+resposta, e o provedor é chamado fora da transação: a configuração é lida numa transação de
+leitura que termina antes do HTTP.
 
 A resposta é inferência de modelo e **não é persistida**: ela não vira anotação nem
 conhecimento autoral. O contexto enviado é o mínimo necessário — o documento integral não

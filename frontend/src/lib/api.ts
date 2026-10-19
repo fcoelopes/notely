@@ -2,6 +2,8 @@ import type {
   Account,
   AIModelConfig,
   AIModelConfigInput,
+  AIModelListInput,
+  AIModelOption,
   Annotation,
   AnnotationPosition,
   AnnotationType,
@@ -366,4 +368,24 @@ export function saveAIModelConfig(input: AIModelConfigInput): Promise<AIModelCon
 
 export function deleteAIModelConfig(): Promise<void> {
   return request("/api/ai-config", { method: "DELETE" });
+}
+
+/**
+ * Modelos que o provedor oferece, pedidos com a chave digitada ou, sem ela, a já gravada.
+ *
+ * A rota não grava nada: serve para a tela oferecer a escolha em vez de exigir o nome
+ * digitado. `409` é a falta de chave/configuração, `422` é o endpoint sem a forma de
+ * `/chat/completions` e `502` é o provedor que não respondeu; em todos eles a tela continua
+ * aceitando o nome digitado.
+ */
+export function listAIModelOptions(input: AIModelListInput): Promise<AIModelOption[]> {
+  const body: Record<string, string> = { provider: input.provider };
+  const key = input.api_key?.trim();
+  if (key) body.api_key = key;
+  const baseUrl = input.base_url?.trim();
+  if (baseUrl) body.base_url = baseUrl;
+  return request<{ models: AIModelOption[] }>("/api/ai-config/models", {
+    method: "POST",
+    body: JSON.stringify(body),
+  }).then((response) => response.models);
 }

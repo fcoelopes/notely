@@ -32,9 +32,14 @@ from notely.core.services import StudySessionNotFoundError
 from notely.providers.chat_model import (
     AnthropicChatProvider,
     ChatMessage,
+    ChatModelInfo,
+    ChatModelListingError,
     ChatModelProvider,
     ChatModelUnavailableError,
+    InvalidModelEndpointError,
     OpenAICompatibleChatProvider,
+    list_anthropic_models,
+    list_openai_compatible_models,
 )
 
 logger = logging.getLogger("notely.assistant")
@@ -62,6 +67,10 @@ class AssistantConfigurationError(AssistantError):
 
 class AssistantUnavailableError(AssistantError):
     """O provider não respondeu."""
+
+
+class AssistantInvalidEndpointError(AssistantError):
+    """O endpoint gravado não permite listar modelos do provedor."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +143,51 @@ class StudyAssistant:
         async with self._uow_factory() as uow:
             await uow.delete_ai_model_config()
             await uow.commit()
+
+    # -- catálogo de modelos --------------------------------------------------
+
+    async def list_models(
+        self,
+        *,
+        provider: AIModelProvider,
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ) -> tuple[ChatModelInfo, ...]:
+        """Lista os modelos oferecidos pelo provedor, para a tela não exigir o nome digitado.
+
+        A chave digitada vale só para esta chamada e não é gravada; sem ela, a chave já
+        guardada é decifrada, com a mesma semântica do `PUT`. A configuração é lida numa
+        transação de leitura que termina antes da chamada ao provedor, e a chave em claro
+        existe só em memória: nenhuma mensagem de erro a repete.
+
+        Uma lista vazia é resposta legítima — significa que o provedor não devolveu nada, e
+        a tela continua aceitando o nome digitado.
+        """
+        stored = await self.get_config()
+        key = (api_key or "").strip()
+        if not key:
+            if stored is None or not stored.api_key_encrypted:
+                raise AssistantNotConfiguredError(
+                    "type the provider key or save the configuration before listing models"
+                )
+            key = user_api_key(stored, self._cipher_required())
+        endpoint = (base_url or "").strip() or ((stored.base_url or "").strip() if stored else "")
+
+        try:
+            if provider is AIModelProvider.ANTHROPIC:
+                return await list_anthropic_models(api_key=key)
+            if not endpoint:
+                raise AssistantInvalidEndpointError(
+                    "an OpenAI-compatible provider needs the URL of /chat/completions to "
+                    "list its models"
+                )
+            return await list_openai_compatible_models(endpoint=endpoint, api_key=key)
+        except InvalidModelEndpointError as exc:
+            raise AssistantInvalidEndpointError(str(exc)) from exc
+        except ChatModelListingError as exc:
+            raise AssistantUnavailableError(
+                "the model provider did not return a model list"
+            ) from exc
 
     # -- resposta -------------------------------------------------------------
 

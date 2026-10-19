@@ -23,6 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from notely.api.schemas import (
     AIModelConfigRequest,
     AIModelConfigResponse,
+    AIModelListItemResponse,
+    AIModelListRequest,
+    AIModelListResponse,
     AISuggestionResponse,
     AnnotationCreate,
     AnnotationResponse,
@@ -96,6 +99,7 @@ from notely.core.security import SecretCipher, SecurityError
 from notely.core.study_assistant import (
     AssistantConfigurationError,
     AssistantError,
+    AssistantInvalidEndpointError,
     AssistantNotConfiguredError,
     AssistantUnavailableError,
     StudyAssistant,
@@ -235,6 +239,7 @@ def register_auth_error_handlers(app: FastAPI) -> None:
         (AssistantNotConfiguredError, status.HTTP_409_CONFLICT),
         (AssistantConfigurationError, status.HTTP_503_SERVICE_UNAVAILABLE),
         (AssistantUnavailableError, status.HTTP_502_BAD_GATEWAY),
+        (AssistantInvalidEndpointError, status.HTTP_422_UNPROCESSABLE_CONTENT),
         (AssistantError, status.HTTP_422_UNPROCESSABLE_CONTENT),
     )
 
@@ -547,6 +552,30 @@ def create_app(
         assistant: StudyAssistant = Depends(get_assistant),
     ) -> None:
         await assistant.clear_config()
+
+    @app.post(
+        "/api/ai-config/models",
+        response_model=AIModelListResponse,
+        tags=["assistant"],
+    )
+    async def list_ai_models(
+        body: AIModelListRequest, assistant: StudyAssistant = Depends(get_assistant)
+    ) -> AIModelListResponse:
+        """Lista os modelos do provedor com a chave digitada ou, sem ela, a já gravada.
+
+        Nada é gravado aqui: a listagem serve para a tela oferecer a escolha em vez de
+        exigir o nome digitado. Sem configuração nem chave a resposta é `409`, endpoint sem
+        a forma esperada é `422` e falha do provedor é `502`.
+        """
+        models = await assistant.list_models(
+            provider=body.provider, api_key=body.api_key, base_url=body.base_url
+        )
+        return AIModelListResponse(
+            models=[
+                AIModelListItemResponse(id=model.id, display_name=model.display_name)
+                for model in models
+            ]
+        )
 
     @app.post(
         "/api/study-assistant/chat",

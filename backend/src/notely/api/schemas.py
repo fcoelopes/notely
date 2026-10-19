@@ -278,6 +278,25 @@ class AIModelConfigResponse(BaseModel):
     has_key: bool
 
 
+class AIModelListRequest(BaseModel):
+    """Pedido da lista de modelos: a chave digitada, se houver, vale só para esta chamada."""
+
+    provider: AIModelProvider
+    api_key: str | None = Field(default=None, max_length=400)
+    base_url: str | None = Field(default=None, max_length=500)
+
+
+class AIModelListItemResponse(BaseModel):
+    """Modelo oferecido pelo provedor: o id que se grava e, quando houver, o nome exibido."""
+
+    id: str
+    display_name: str | None = None
+
+
+class AIModelListResponse(BaseModel):
+    models: list[AIModelListItemResponse] = Field(default_factory=list)
+
+
 class AssistantChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     study_session_id: UUID | None = None

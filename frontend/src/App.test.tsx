@@ -71,6 +71,7 @@ const api = vi.hoisted(() => ({
   createConceptRelation: vi.fn(),
   deleteClaimRelation: vi.fn(),
   getAIModelConfig: vi.fn(),
+  listAIModelOptions: vi.fn(),
   saveAIModelConfig: vi.fn(),
   deleteAIModelConfig: vi.fn(),
 }));
@@ -435,6 +436,9 @@ describe("App", () => {
     // A configuração de modelo vive no servidor e nunca devolve a chave: aqui a leitura
     // reflete o que foi gravado, e a gravação sem chave mantém a que já existia.
     api.getAIModelConfig.mockImplementation(() => Promise.resolve(currentAIConfig));
+    // Sem lista, o campo de modelo continua sendo texto livre: é o que os testes abaixo
+    // esperam, exceto os que pedem a lista ao provedor.
+    api.listAIModelOptions.mockResolvedValue([]);
     api.saveAIModelConfig.mockImplementation((input: AIModelConfigInput) => {
       currentAIConfig = {
         provider: input.provider,
@@ -1475,6 +1479,75 @@ describe("App", () => {
     expect(screen.getByText("gravada no servidor")).toBeInTheDocument();
   });
 
+  it("lists the provider models automatically and saves the chosen one", async () => {
+    currentAIConfig = {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      base_url: null,
+      enabled: true,
+      has_key: true,
+    };
+    api.listAIModelOptions.mockResolvedValue([
+      { id: "claude-sonnet-4-5", display_name: "Claude Sonnet 4.5" },
+      { id: "claude-opus-4-5", display_name: "Claude Opus 4.5" },
+    ]);
+    await startSession({ theme: "tema", openPanels: false });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Modelo de IA");
+
+    // Com configuração salva a lista é pedida sozinha, com o que está gravado no servidor.
+    await waitFor(() =>
+      expect(api.listAIModelOptions).toHaveBeenCalledWith({
+        provider: "anthropic",
+        base_url: null,
+      }),
+    );
+    await waitFor(() => expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT"));
+    expect(screen.getByLabelText("Modelo")).toHaveValue("claude-sonnet-4-5");
+
+    fireEvent.change(screen.getByLabelText("Modelo"), {
+      target: { value: "claude-opus-4-5" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar configuração" }));
+
+    await waitFor(() => expect(api.saveAIModelConfig).toHaveBeenCalledTimes(1));
+    // O modelo escolhido na lista é o que se grava, sem nome digitado à mão.
+    expect(api.saveAIModelConfig.mock.calls[0][0]).toEqual({
+      provider: "anthropic",
+      model: "claude-opus-4-5",
+      base_url: null,
+      enabled: true,
+    });
+    expect(await screen.findByText("claude-opus-4-5")).toBeInTheDocument();
+  });
+
+  it("does not block saving by typing when the model list fails", async () => {
+    api.listAIModelOptions.mockRejectedValue(
+      new ApiError(502, "the model provider did not return a model list"),
+    );
+    await startSession({ theme: "tema", openPanels: false });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Modelo de IA");
+    await screen.findByText("Nenhum modelo de IA configurado.");
+
+    fireEvent.change(screen.getByLabelText("Chave da API"), {
+      target: { value: "chave-ficticia-de-teste" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Carregar modelos" }));
+
+    // A falha da lista aparece e o nome digitado continua valendo.
+    expect(
+      await screen.findByText(/O provedor não respondeu à lista de modelos/),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "claude-sonnet-4-5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
+
+    await waitFor(() => expect(api.saveAIModelConfig).toHaveBeenCalledTimes(1));
+    expect(api.saveAIModelConfig.mock.calls[0][0].model).toBe("claude-sonnet-4-5");
+    // A chave não aparece no texto da página nem no estado depois de gravada.
+    expect(document.body.textContent).not.toContain("chave-ficticia-de-teste");
+  });
+
   it("does not send openai_compatible without a base url", async () => {
     await startSession({ theme: "tema", openPanels: false });
     fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
@@ -1487,7 +1560,8 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "llama3.1" } });
     const save = screen.getByRole("button", { name: "Cadastrar modelo" });
     expect(save).toBeDisabled();
-    expect(screen.getByText(/exige a base URL antes de gravar/)).toBeInTheDocument();
+    expect(screen.getByText(/exige a URL de \/chat\/completions antes de gravar/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Endpoint do provedor em /chat/completions")).toBeInTheDocument();
     fireEvent.click(save);
     expect(api.saveAIModelConfig).not.toHaveBeenCalled();
   });

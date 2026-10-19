@@ -34,7 +34,7 @@ npm run build
 - fontes sugeridas para dúvidas criadas numa sessão, com estado assíncrono, excerto verificável, prévia da página e navegação explícita;
 - afirmações do leitor a partir de um trecho anotado, com evidência visível, remoção e reafirmação que reaproveita a afirmação existente;
 - conceitos das obras da sessão marcados como inferência, com a contagem de trechos e a associação autoral entre dois deles;
-- painel de configuração do modelo de IA na barra lateral, com provedor, modelo, base URL, existência de chave e remoção confirmada.
+- painel de configuração do modelo de IA na barra lateral, com provedor, modelo escolhido na lista do próprio provedor (ou digitado em "outro"), endpoint, existência de chave e remoção confirmada.
 
 O download autenticado (multi-usuário) do PDF armazenado fica para quando houver escopo por usuário.
 
@@ -133,7 +133,7 @@ associação entre dois conceitos é autoral. Ver
 
 O painel **Modelo de IA** fica na barra lateral, em `<details>` como os demais, e é a única
 forma de cadastrar o modelo: não é mais preciso usar `curl`. Ele mostra o que a API devolve —
-provedor, modelo, base URL, se existe chave gravada e se o modelo está ativo — e permite
+provedor, modelo, endpoint, se existe chave gravada e se o modelo está ativo — e permite
 gravar, atualizar e remover a configuração.
 
 - `GET /api/ai-config` respondendo `404` significa **sem configuração**, não erro: o painel
@@ -143,7 +143,7 @@ gravar, atualizar e remover a configuração.
   vazio: deixado vazio, a chave já gravada é **mantida**, e a interface diz isso. Depois de
   salvar com sucesso o campo é limpo do estado.
 - `provider` aceita `anthropic` e `openai_compatible`. O segundo cobre Ollama, LM Studio,
-  vLLM e gateways compatíveis e **exige a base URL antes do envio**; o primeiro usa o
+  vLLM e gateways compatíveis e **exige o endpoint antes do envio**; o primeiro usa o
   endpoint oficial e dispensa.
 - `DELETE /api/ai-config` remove a configuração, sempre depois da confirmação no próprio
   painel, e a leitura seguinte volta a responder `404`.
@@ -154,3 +154,29 @@ só muda depois do sucesso da API; uma falha aparece junto ao formulário, mant�
 digitado e não impede ler, navegar ou anotar. Ver
 [plano](../future/tela-modelo-de-ia.md) e
 [issue #24](https://github.com/fcoelopes/notely/issues/24).
+
+## Lista de modelos do provedor (issue #25)
+
+O nome do modelo deixou de ser digitado às cegas: o campo **Modelo** é uma lista alimentada
+pelo próprio provedor, com **"outro (digitar)"** como saída para o que a lista não traz.
+`POST /api/ai-config/models` recebe `{provider, api_key?, base_url?}` e devolve
+`{models: [{id, display_name?}]}`; a rota não grava nada.
+
+- Com configuração salva a lista é pedida **automaticamente**, usando a chave já gravada e o
+  endpoint gravado. Sem configuração, ela sai por um botão explícito, **Carregar modelos**,
+  que envia a chave e o endpoint digitados no formulário — só para aquela chamada.
+- **"outro (digitar)"** volta ao campo de texto livre, já com o modelo atual dentro: é o
+  caminho para endpoints locais e para modelos que o provedor não devolve. Se o modelo
+  gravado não estiver na lista, o painel mantém o campo de texto em vez de apagar o que está
+  configurado.
+- Falha ao listar aparece junto ao campo e **não impede salvar digitando**: `409` é falta de
+  chave, `422` é endpoint que não termina em `/chat/completions`, `502` é provedor que não
+  respondeu.
+- O campo do provedor compatível com OpenAI passou a se chamar **Endpoint de
+  /chat/completions**: é a URL completa que o adapter chama, e é dela que sai a lista de
+  modelos. O rótulo anterior, "base URL", induzia a gravar só o prefixo.
+
+A lista é só conveniência: o que vale é o que a pessoa grava, e a tela nunca transforma
+resposta de provedor em configuração sem o envio do formulário. Ver
+[plano](../future/tela-modelo-de-ia.md) e
+[issue #25](https://github.com/fcoelopes/notely/issues/25).

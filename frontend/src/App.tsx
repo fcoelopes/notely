@@ -33,6 +33,7 @@ import {
   listClaims,
   listConcepts,
   listDocuments,
+  listAIModelOptions,
   listDocumentBookmarks,
   listStudySessions,
   logout,
@@ -1019,6 +1020,7 @@ function Reader({ account, onSignOut }: { account: Account; onSignOut: () => voi
               error={aiConfigError}
               loading={aiConfigLoading}
               notice={aiConfigNotice}
+              onListModels={listAIModelOptions}
               onReload={() => void refreshAIConfig()}
               onRemove={handleRemoveAIConfig}
               onSave={handleSaveAIConfig}

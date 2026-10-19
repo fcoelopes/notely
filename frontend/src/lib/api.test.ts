@@ -3,6 +3,7 @@ import {
   ApiError,
   deleteAIModelConfig,
   getAIModelConfig,
+  listAIModelOptions,
   saveAIModelConfig,
 } from "./api";
 
@@ -90,5 +91,49 @@ describe("api da configuração de modelo", () => {
       "/api/ai-config",
       expect.objectContaining({ method: "DELETE" }),
     );
+  });
+
+  it("pede a lista de modelos com POST e devolve o que o provedor oferece", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(
+      response(200, {
+        models: [
+          { id: "claude-sonnet-4-5", display_name: "Claude Sonnet 4.5" },
+          { id: "claude-haiku-4-5", display_name: null },
+        ],
+      }),
+    );
+
+    const models = await listAIModelOptions({
+      provider: "anthropic",
+      api_key: "  chave-ficticia-de-teste  ",
+      base_url: "  ",
+    });
+
+    expect(models).toEqual([
+      { id: "claude-sonnet-4-5", display_name: "Claude Sonnet 4.5" },
+      { id: "claude-haiku-4-5", display_name: null },
+    ]);
+    // Sem chave o corpo não leva `api_key`: o servidor usa a que está gravada.
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/ai-config/models",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ provider: "anthropic", api_key: "chave-ficticia-de-teste" }),
+        credentials: "include",
+      }),
+    );
+  });
+
+  it("leva o 409 da listagem como erro, com o status preservado", async () => {
+    stubFetch();
+    fetchMock.mockResolvedValue(
+      response(409, { detail: "the model provider has no stored key" }),
+    );
+    const failure = await listAIModelOptions({ provider: "anthropic" }).catch(
+      (caught: unknown) => caught,
+    );
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).status).toBe(409);
   });
 });

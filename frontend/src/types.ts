@@ -303,3 +303,22 @@ export interface AIModelConfigInput {
   base_url?: string | null;
   enabled: boolean;
 }
+
+/**
+ * Modelo oferecido pelo provedor, como a listagem devolve: `id` é o que se grava e
+ * `display_name` só aparece quando o provedor manda um nome legível.
+ */
+export interface AIModelOption {
+  id: string;
+  display_name: string | null;
+}
+
+/**
+ * Pedido da lista de modelos. Sem `api_key`, o servidor usa a chave já gravada; a chave
+ * digitada vale só para a chamada e não é gravada.
+ */
+export interface AIModelListInput {
+  provider: AIModelProvider;
+  api_key?: string;
+  base_url?: string | null;
+}

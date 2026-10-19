@@ -625,6 +625,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ai-config-field .ai-config-required { color: #8a7b46; }
 .ai-config-key { display: flex; gap: 6px; }
 .ai-config-key input { flex: 1; min-width: 0; }
+.ai-config-model-actions { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.ai-config-list { border: 1px solid var(--line); background: #fff; color: var(--muted); border-radius: 6px; padding: 5px 10px; font-size: 10px; cursor: pointer; }
+.ai-config-list:hover:not(:disabled) { border-color: var(--sage); color: var(--sage); }
+.ai-config-list:disabled { opacity: 0.5; cursor: default; }
+.ai-config-list-hint { flex: 1; min-width: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .ai-config-reveal { border: 1px solid var(--line); background: transparent; color: var(--muted); border-radius: 6px; padding: 0 10px; font-size: 11px; cursor: pointer; }
 .ai-config-reveal[aria-pressed="true"] { border-color: var(--sage); color: var(--sage); }
 .ai-config-toggle { display: flex; gap: 7px; align-items: flex-start; color: var(--muted); font-size: 10px; line-height: 1.45; }

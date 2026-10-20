@@ -1523,7 +1523,10 @@ describe("App", () => {
 
   it("does not block saving by typing when the model list fails", async () => {
     api.listAIModelOptions.mockRejectedValue(
-      new ApiError(502, "the model provider did not return a model list"),
+      new ApiError(
+        502,
+        "could not reach http://localhost:11434/v1/models: the connection was refused",
+      ),
     );
     await startSession({ theme: "tema", openPanels: false });
     fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
@@ -1535,9 +1538,13 @@ describe("App", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Carregar modelos" }));
 
-    // A falha da lista aparece e o nome digitado continua valendo.
+    // A falha aparece na tela com o motivo que o servidor deu, e o nome digitado continua
+    // valendo: sem lista e sem configuração não há o que escolher, então o campo é texto.
     expect(
-      await screen.findByText(/O provedor não respondeu à lista de modelos/),
+      await screen.findByText(/Não foi possível obter a lista de modelos do provedor/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/could not reach http:\/\/localhost:11434\/v1\/models/),
     ).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "claude-sonnet-4-5" } });
     fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
@@ -1546,6 +1553,35 @@ describe("App", () => {
     expect(api.saveAIModelConfig.mock.calls[0][0].model).toBe("claude-sonnet-4-5");
     // A chave não aparece no texto da página nem no estado depois de gravada.
     expect(document.body.textContent).not.toContain("chave-ficticia-de-teste");
+  });
+
+  it("keeps the model as a list when the provider refuses the saved key", async () => {
+    currentAIConfig = {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      base_url: null,
+      enabled: true,
+      has_key: true,
+    };
+    api.listAIModelOptions.mockRejectedValue(
+      new ApiError(
+        422,
+        "the Anthropic provider refused the api key with HTTP 401: check the key saved for this provider before listing models",
+      ),
+    );
+    await startSession({ theme: "tema", openPanels: false });
+    fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
+    openSidebarDetails("Modelo de IA");
+
+    // O erro diz que o provedor recusou a chave, e mesmo assim o campo continua lista.
+    expect(
+      await screen.findByText(/O pedido da lista de modelos foi recusado/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/refused the api key with HTTP 401/);
+    const field = screen.getByLabelText("Modelo");
+    expect(field.tagName).toBe("SELECT");
+    expect(field).toHaveValue("claude-sonnet-4-5");
+    expect(screen.getByRole("option", { name: "outro (digitar)" })).toBeInTheDocument();
   });
 
   it("does not send openai_compatible without a base url", async () => {

@@ -32,10 +32,12 @@ from notely.core.services import StudySessionNotFoundError
 from notely.providers.chat_model import (
     AnthropicChatProvider,
     ChatMessage,
+    ChatModelCredentialsRejectedError,
     ChatModelInfo,
     ChatModelListingError,
     ChatModelProvider,
     ChatModelUnavailableError,
+    ChatModelUnreachableError,
     InvalidModelEndpointError,
     OpenAICompatibleChatProvider,
     list_anthropic_models,
@@ -43,6 +45,11 @@ from notely.providers.chat_model import (
 )
 
 logger = logging.getLogger("notely.assistant")
+
+PROVIDER_DOMAIN_NAMES: dict[AIModelProvider, str] = {
+    AIModelProvider.ANTHROPIC: "Anthropic",
+    AIModelProvider.OPENAI_COMPATIBLE: "OpenAI-compatible",
+}
 
 MAX_SOURCES = 5
 MAX_EXCERPT_CHARACTERS = 600
@@ -67,6 +74,10 @@ class AssistantConfigurationError(AssistantError):
 
 class AssistantUnavailableError(AssistantError):
     """O provider não respondeu."""
+
+
+class AssistantCredentialsRejectedError(AssistantError):
+    """O provedor respondeu `401`/`403`: a chave guardada não serve para aquela chamada."""
 
 
 class AssistantInvalidEndpointError(AssistantError):
@@ -162,6 +173,11 @@ class StudyAssistant:
 
         Uma lista vazia é resposta legítima — significa que o provedor não devolveu nada, e
         a tela continua aceitando o nome digitado.
+
+        As falhas ficam distinguíveis porque a tela precisa dizer o motivo: credencial
+        recusada (vira `AssistantCredentialsRejectedError`), provedor inalcançável e
+        resposta fora do formato de lista (as duas viram `AssistantUnavailableError`, com o
+        endpoint tentado na mensagem). A chave em claro nunca entra em nenhuma delas.
         """
         stored = await self.get_config()
         key = (api_key or "").strip()
@@ -184,10 +200,16 @@ class StudyAssistant:
             return await list_openai_compatible_models(endpoint=endpoint, api_key=key)
         except InvalidModelEndpointError as exc:
             raise AssistantInvalidEndpointError(str(exc)) from exc
-        except ChatModelListingError as exc:
-            raise AssistantUnavailableError(
-                "the model provider did not return a model list"
+        except ChatModelCredentialsRejectedError as exc:
+            raise AssistantCredentialsRejectedError(
+                f"the {PROVIDER_DOMAIN_NAMES[provider]} provider refused the api key with "
+                f"HTTP {exc.status}: check the key saved for this provider before listing "
+                f"models"
             ) from exc
+        except ChatModelUnreachableError as exc:
+            raise AssistantUnavailableError(str(exc)) from exc
+        except ChatModelListingError as exc:
+            raise AssistantUnavailableError(str(exc)) from exc
 
     # -- resposta -------------------------------------------------------------
 

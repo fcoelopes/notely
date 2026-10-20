@@ -5,11 +5,16 @@ Aqui o transporte é dublado (`urllib.request.urlopen`), então o teste verifica
 headers — os mesmos dos adapters de chat — e a leitura da resposta, incluindo o caminho em
 que o endpoint configurado não tem a forma que a listagem exige. A chave é fictícia e nunca
 pode aparecer em mensagem de erro.
+
+As três falhas de listagem são verificadas separadamente, porque a tela mostra o motivo ao
+usuário: credencial recusada (`401`/`403`), provedor inalcançável (DNS, timeout, recusa) e
+resposta fora do formato de lista.
 """
 
 from __future__ import annotations
 
 import json
+import socket
 import urllib.error
 import urllib.request
 
@@ -18,6 +23,7 @@ import pytest
 from notely.core.models import AIModelConfig, AIModelProvider
 from notely.core.security import SecretCipher
 from notely.core.study_assistant import (
+    AssistantCredentialsRejectedError,
     AssistantInvalidEndpointError,
     AssistantNotConfiguredError,
     AssistantUnavailableError,
@@ -26,8 +32,10 @@ from notely.core.study_assistant import (
 from notely.providers.chat_model import (
     ANTHROPIC_MODELS_ENDPOINT,
     AnthropicChatProvider,
+    ChatModelCredentialsRejectedError,
     ChatModelInfo,
     ChatModelListingError,
+    ChatModelUnreachableError,
     InvalidModelEndpointError,
     list_anthropic_models,
     list_openai_compatible_models,
@@ -156,16 +164,63 @@ async def test_an_endpoint_without_the_chat_completions_suffix_is_refused(
     assert requests == []
 
 
+@pytest.mark.parametrize("status", (401, 403))
+async def test_a_rejected_key_is_reported_as_a_rejected_key(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    """`401`/`403` não é "provedor fora": é a chave que o provedor recusou."""
+    stub_transport(monkeypatch, error=http_error(status))
+
+    with pytest.raises(ChatModelCredentialsRejectedError) as failure:
+        await list_anthropic_models(api_key=PROVIDER_KEY)
+
+    assert failure.value.status == status
+    assert failure.value.endpoint == ANTHROPIC_MODELS_ENDPOINT
+    assert str(status) in str(failure.value)
+    assert PROVIDER_KEY not in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    (
+        (
+            urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+            "the connection was refused",
+        ),
+        (
+            urllib.error.URLError(socket.gaierror(-2, "Name or service not known")),
+            "the host name could not be resolved",
+        ),
+        (TimeoutError("timed out"), "the request timed out"),
+        (ConnectionRefusedError(111, "Connection refused"), "the connection was refused"),
+    ),
+)
+async def test_an_unreachable_provider_is_reported_with_the_endpoint(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, reason: str
+) -> None:
+    stub_transport(monkeypatch, error=error)
+
+    with pytest.raises(ChatModelUnreachableError) as failure:
+        await list_openai_compatible_models(endpoint=CHAT_ENDPOINT, api_key=PROVIDER_KEY)
+
+    message = str(failure.value)
+    # O host tentado vai na mensagem: é o que diz ao dono qual endpoint conferir.
+    assert MODELS_ENDPOINT in message
+    assert reason in message
+    assert PROVIDER_KEY not in message
+
+
 @pytest.mark.parametrize(
     "transport",
     (
-        {"error": urllib.error.URLError("conexão recusada")},
-        {"error": http_error(401)},
-        {"raw": b"isto nao e json"},
         {"payload": {"object": "list"}},
+        {"payload": ["lista", "sem", "envelope"]},
+        {"raw": b"isto nao e json"},
+        {"raw": b"\xff\xfe nao e utf-8"},
+        {"error": http_error(500)},
     ),
 )
-async def test_a_failure_of_the_provider_is_reported_without_the_key(
+async def test_a_payload_out_of_shape_is_reported_without_the_key(
     monkeypatch: pytest.MonkeyPatch, transport: dict[str, object]
 ) -> None:
     stub_transport(monkeypatch, **transport)  # type: ignore[arg-type]
@@ -173,7 +228,10 @@ async def test_a_failure_of_the_provider_is_reported_without_the_key(
     with pytest.raises(ChatModelListingError) as failure:
         await list_anthropic_models(api_key=PROVIDER_KEY)
 
-    assert PROVIDER_KEY not in str(failure.value)
+    message = str(failure.value)
+    assert ANTHROPIC_MODELS_ENDPOINT in message
+    assert "did not return a model list" in message
+    assert PROVIDER_KEY not in message
 
 
 async def test_entries_without_an_usable_id_are_skipped_and_duplicates_collapse(
@@ -339,9 +397,81 @@ async def test_openai_compatible_listing_requires_the_chat_completions_url(
     assert "/chat/completions" in str(failure.value)
 
 
-async def test_a_provider_failure_is_an_unavailable_provider(
+@pytest.mark.parametrize(("status", "provider"), ((401, "Anthropic"), (403, "Anthropic")))
+async def test_a_rejected_key_becomes_a_credentials_error_naming_the_provider(
+    monkeypatch: pytest.MonkeyPatch, status: int, provider: str
+) -> None:
+    """A chave guardada pode estar revogada: a mensagem diz isso, e cita o provedor."""
+    stub_transport(monkeypatch, error=http_error(status))
+    cipher = _cipher()
+
+    with pytest.raises(AssistantCredentialsRejectedError) as failure:
+        await assistant(_config(cipher), cipher).list_models(
+            provider=AIModelProvider.ANTHROPIC
+        )
+
+    message = str(failure.value)
+    assert provider in message
+    assert "refused the api key" in message
+    assert str(status) in message
+    assert PROVIDER_KEY not in message
+
+
+async def test_a_rejected_typed_key_is_reported_for_the_compatible_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    stub_transport(monkeypatch, error=http_error(401, MODELS_ENDPOINT))
+
+    with pytest.raises(AssistantCredentialsRejectedError) as failure:
+        await assistant(None, _cipher()).list_models(
+            provider=AIModelProvider.OPENAI_COMPATIBLE,
+            api_key=TYPED_KEY,
+            base_url=CHAT_ENDPOINT,
+        )
+
+    message = str(failure.value)
+    assert "OpenAI-compatible" in message
+    assert TYPED_KEY not in message
+
+
+async def test_an_unreachable_provider_is_unavailable_and_says_the_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub_transport(monkeypatch, error=urllib.error.URLError(ConnectionRefusedError(111, "no")))
+    cipher = _cipher()
+
+    with pytest.raises(AssistantUnavailableError) as failure:
+        await assistant(_config(cipher), cipher).list_models(
+            provider=AIModelProvider.OPENAI_COMPATIBLE
+        )
+
+    message = str(failure.value)
+    assert "could not reach" in message
+    assert MODELS_ENDPOINT in message
+    assert PROVIDER_KEY not in message
+
+
+async def test_an_unexpected_payload_is_unavailable_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub_transport(monkeypatch, payload={"object": "list"})
+    cipher = _cipher()
+
+    with pytest.raises(AssistantUnavailableError) as failure:
+        await assistant(_config(cipher), cipher).list_models(
+            provider=AIModelProvider.OPENAI_COMPATIBLE
+        )
+
+    message = str(failure.value)
+    assert MODELS_ENDPOINT in message
+    assert "did not return a model list" in message
+    assert PROVIDER_KEY not in message
+
+
+async def test_a_provider_server_error_is_not_mistaken_for_a_rejected_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Um `5xx` do provedor é indisponibilidade, não credencial recusada."""
     stub_transport(monkeypatch, error=http_error(500))
     cipher = _cipher()
 
@@ -350,6 +480,7 @@ async def test_a_provider_failure_is_an_unavailable_provider(
             provider=AIModelProvider.ANTHROPIC
         )
 
+    assert "HTTP 500" in str(failure.value)
     assert PROVIDER_KEY not in str(failure.value)
 
 

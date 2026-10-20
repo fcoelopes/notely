@@ -230,7 +230,7 @@ async def test_a_stored_endpoint_without_the_chat_completions_suffix_is_a_422(
     assert requests == []
 
 
-async def test_a_provider_failure_is_a_502_without_exposing_the_key(
+async def test_a_rejected_key_is_a_422_naming_the_provider_and_without_the_key(
     context: IntegrationContext, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cipher = SecretCipher(SecretCipher.generate_key())
@@ -247,8 +247,50 @@ async def test_a_provider_failure_is_a_502_without_exposing_the_key(
 
     response = await post_models(app_for(context, target), {"provider": "anthropic"})
 
+    # O dono precisa saber que a chave foi recusada, não que "o provedor não respondeu".
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "refused the api key" in detail
+    assert "Anthropic" in detail
+    assert PROVIDER_KEY not in response.text
+
+
+async def test_an_unreachable_provider_is_a_502_with_the_endpoint(
+    context: IntegrationContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cipher = SecretCipher(SecretCipher.generate_key())
+    target = assistant(context, cipher)
+    await target.save_config(
+        provider=AIModelProvider.OPENAI_COMPATIBLE,
+        model="llama3.1",
+        api_key=PROVIDER_KEY,
+        base_url=CHAT_ENDPOINT,
+    )
+    stub_transport(
+        monkeypatch, error=urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+    )
+
+    response = await post_models(app_for(context, target), {"provider": "openai_compatible"})
+
     assert response.status_code == 502
-    assert "model list" in response.json()["detail"]
+    assert MODELS_ENDPOINT in response.json()["detail"]
+    assert PROVIDER_KEY not in response.text
+
+
+async def test_an_unexpected_payload_is_a_502_saying_it_is_not_a_model_list(
+    context: IntegrationContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cipher = SecretCipher(SecretCipher.generate_key())
+    target = assistant(context, cipher)
+    await target.save_config(
+        provider=AIModelProvider.ANTHROPIC, model="claude-exemplo", api_key=PROVIDER_KEY
+    )
+    stub_transport(monkeypatch, payload={"object": "list"})
+
+    response = await post_models(app_for(context, target), {"provider": "anthropic"})
+
+    assert response.status_code == 502
+    assert "did not return a model list" in response.json()["detail"]
     assert PROVIDER_KEY not in response.text
 
 

@@ -43,22 +43,24 @@ interface Props {
 /**
  * Mensagem da falha de listagem.
  *
- * O que o provedor devolveu não importa para quem está na tela: o que ela precisa saber é que
- * a lista não veio e que o nome digitado continua valendo. A chave nunca é repetida aqui.
+ * O motivo vem do servidor — chave recusada pelo provedor, endpoint inalcançável, resposta
+ * fora do formato de lista —, porque é o backend que falou com o provedor. Aqui ele só é
+ * enquadrado em português: nada de "digite o nome" aqui, porque o campo continua sendo a
+ * lista, com "outro (digitar)" para quem quiser escrever por decisão própria. A chave nunca
+ * é repetida: o servidor não a devolve.
  */
+const LISTING_LEADS: Record<number, string> = {
+  409: "Não há chave para pedir a lista ao provedor.",
+  422: "O pedido da lista de modelos foi recusado.",
+};
+const LISTING_LEAD = "Não foi possível obter a lista de modelos do provedor.";
+
 function listingFailure(caught: unknown): string {
-  if (caught instanceof ApiError) {
-    if (caught.status === 409) {
-      return "Não há chave para listar os modelos. Digite a chave do provedor e carregue a lista, ou digite o nome do modelo.";
-    }
-    if (caught.status === 422) {
-      return "O endpoint informado não permite listar os modelos. Informe a URL completa de /chat/completions, ou digite o nome do modelo.";
-    }
-    if (caught.status === 502) {
-      return "O provedor não respondeu à lista de modelos. Você ainda pode digitar o nome e salvar.";
-    }
-  }
-  return "Não foi possível listar os modelos do provedor. Você ainda pode digitar o nome e salvar.";
+  if (!(caught instanceof ApiError)) return LISTING_LEAD;
+  const lead = LISTING_LEADS[caught.status] ?? LISTING_LEAD;
+  const reason = caught.message.trim();
+  if (!reason) return lead;
+  return `${lead} Motivo informado pelo servidor: ${reason}`;
 }
 
 /**
@@ -71,8 +73,9 @@ function listingFailure(caught: unknown): string {
  *
  * O modelo é escolhido na lista que o próprio provedor devolve. Com configuração salva a
  * lista é carregada automaticamente; sem ela, o botão explícito pede a chave e então lista.
- * A opção "outro (digitar)" volta ao campo de texto livre, porque nenhuma lista cobre todo
- * endpoint local — e falhar ao listar nunca impede salvar digitando.
+ * Quando a lista não vem, o campo continua sendo uma lista — com o modelo atual e "outro
+ * (digitar)" — e o motivo da falha aparece acima dele; a caixa de texto só aparece quando o
+ * usuário escolhe "outro", de propósito.
  */
 export function AIModelPanel({
   config,
@@ -96,7 +99,9 @@ export function AIModelPanel({
   const [options, setOptions] = useState<AIModelOption[] | null>(null);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [loadingOptions, setLoadingOptions] = useState(false);
-  // O campo de texto é o padrão: a lista só o substitui quando o provedor oferece modelos.
+  // O campo começa como texto porque ainda não há lista alguma para oferecer. Depois da
+  // primeira listagem, quem manda é ela: só o usuário, escolhendo "outro (digitar)", sai
+  // da lista — uma falha de rede não troca o campo por uma caixa de texto.
   const [typingModel, setTypingModel] = useState(!config);
 
   const hasKey = config?.has_key ?? false;
@@ -105,7 +110,9 @@ export function AIModelPanel({
   const canSave = !busy && pending === null && Boolean(model.trim()) && !missingBaseUrl;
   const listed = options ?? [];
   const modelInList = listed.some((option) => option.id === model);
-  const showModelList = !typingModel && listed.length > 0 && (model === "" || modelInList);
+  // O campo é lista quando a lista veio do provedor ou quando a listagem falhou: nos dois
+  // casos há escolha a oferecer, e o modelo atual aparece mesmo fora da lista devolvida.
+  const showModelList = !typingModel && (listed.length > 0 || optionsError !== null);
 
   // A configuração só muda aqui depois do sucesso da API. Sem configuração o formulário
   // volta vazio; com ela, reflete o que o servidor confirmou. A chave nunca é reescrita.
@@ -142,7 +149,8 @@ export function AIModelPanel({
         if (!active) return;
         setOptions(null);
         setOptionsError(listingFailure(caught));
-        setTypingModel(true);
+        // O campo continua a lista: o modelo gravado segue selecionado nela e "outro
+        // (digitar)" está ali para quem quiser escrever outro nome.
       })
       .finally(() => {
         if (active) setLoadingOptions(false);
@@ -170,7 +178,8 @@ export function AIModelPanel({
     } catch (caught) {
       setOptions(null);
       setOptionsError(listingFailure(caught));
-      setTypingModel(true);
+      // Sem lista, o campo continua sendo a lista, com o modelo atual: trocá-lo por caixa
+      // de texto esconderia a escolha que o painel oferece.
     } finally {
       setLoadingOptions(false);
     }
@@ -283,6 +292,12 @@ export function AIModelPanel({
 
         <div className="ai-config-field">
           <label htmlFor="ai-config-model">Modelo</label>
+          {/* O motivo da falha fica acima do campo: é o que explica a lista incompleta. */}
+          {optionsError && (
+            <p className="ai-config-list-error" role="alert">
+              {optionsError}
+            </p>
+          )}
           {showModelList ? (
             <select
               aria-label="Modelo"
@@ -299,6 +314,8 @@ export function AIModelPanel({
               value={model}
             >
               {model === "" && <option value="">Escolha um modelo</option>}
+              {/* Modelo atual que a lista não traz continua selecionado, em vez de sumir. */}
+              {model !== "" && !modelInList && <option value={model}>{model}</option>}
               {listed.map((option) => (
                 <option key={option.id} value={option.id}>
                   {option.display_name ?? option.id}
@@ -327,7 +344,6 @@ export function AIModelPanel({
             </button>
             {listOptionsHint(showModelList, listed.length)}
           </div>
-          {optionsError && <small className="ai-config-required">{optionsError}</small>}
         </div>
 
         {needsBaseUrl && (
@@ -458,11 +474,19 @@ export function AIModelPanel({
 
 /** Diz de onde veio o que está no campo, para a lista não parecer uma caixa qualquer. */
 function listOptionsHint(showModelList: boolean, count: number) {
-  if (showModelList) {
+  if (showModelList && count > 0) {
     return (
       <small className="ai-config-list-hint">
         {count} modelos devolvidos pelo provedor. Para um modelo que não está na lista,
         escolha &quot;{OTHER_MODEL_LABEL}&quot;.
+      </small>
+    );
+  }
+  if (showModelList) {
+    return (
+      <small className="ai-config-list-hint">
+        A lista não veio, mas o campo continua sendo a escolha: o modelo atual segue
+        selecionado e &quot;{OTHER_MODEL_LABEL}&quot; abre o nome escrito à mão.
       </small>
     );
   }

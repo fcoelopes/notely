@@ -98,6 +98,7 @@ from notely.core.models import (
 from notely.core.security import SecretCipher, SecurityError
 from notely.core.study_assistant import (
     AssistantConfigurationError,
+    AssistantCredentialsRejectedError,
     AssistantError,
     AssistantInvalidEndpointError,
     AssistantNotConfiguredError,
@@ -240,6 +241,7 @@ def register_auth_error_handlers(app: FastAPI) -> None:
         (AssistantConfigurationError, status.HTTP_503_SERVICE_UNAVAILABLE),
         (AssistantUnavailableError, status.HTTP_502_BAD_GATEWAY),
         (AssistantInvalidEndpointError, status.HTTP_422_UNPROCESSABLE_CONTENT),
+        (AssistantCredentialsRejectedError, status.HTTP_422_UNPROCESSABLE_CONTENT),
         (AssistantError, status.HTTP_422_UNPROCESSABLE_CONTENT),
     )
 
@@ -564,8 +566,10 @@ def create_app(
         """Lista os modelos do provedor com a chave digitada ou, sem ela, a já gravada.
 
         Nada é gravado aqui: a listagem serve para a tela oferecer a escolha em vez de
-        exigir o nome digitado. Sem configuração nem chave a resposta é `409`, endpoint sem
-        a forma esperada é `422` e falha do provedor é `502`.
+        exigir o nome digitado. Sem configuração nem chave a resposta é `409`; endpoint sem
+        a forma esperada ou chave recusada pelo provedor (`401`/`403`) é `422`; provedor
+        inalcançável ou resposta fora do formato de lista é `502`, com o motivo na
+        mensagem — sem repetir a chave.
         """
         models = await assistant.list_models(
             provider=body.provider, api_key=body.api_key, base_url=body.base_url

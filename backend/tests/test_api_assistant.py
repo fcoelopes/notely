@@ -11,11 +11,13 @@ from auth_helpers import authenticate
 from notely.api.app import create_app
 from notely.core.models import AIModelConfig, AIModelProvider
 from notely.core.study_assistant import (
+    AssistantCredentialsRejectedError,
     AssistantNotConfiguredError,
     AssistantSource,
     AssistantUnavailableError,
     AssistantAnswer,
 )
+from notely.providers.chat_model import ChatModelInfo
 
 CONFIG = AIModelConfig(
     provider=AIModelProvider.ANTHROPIC,
@@ -34,10 +36,14 @@ class StubAssistant:
         config: AIModelConfig | None = CONFIG,
         error: Exception | None = None,
         grounded: bool = True,
+        listing: tuple[ChatModelInfo, ...] = (),
+        listing_error: Exception | None = None,
     ) -> None:
         self.config = config
         self.error = error
         self.grounded = grounded
+        self.listing = listing
+        self.listing_error = listing_error
         self.saved: dict[str, object] = {}
         self.cleared = False
 
@@ -52,6 +58,13 @@ class StubAssistant:
     async def clear_config(self) -> None:
         self.cleared = True
         self.config = None
+
+    async def list_models(self, **values: object) -> tuple[ChatModelInfo, ...]:
+        # A listagem não grava: quem recebe a chave aqui é só a chamada ao provedor.
+        self.listed = values
+        if self.listing_error is not None:
+            raise self.listing_error
+        return self.listing
 
     async def ask(self, *, message: str, study_session_id: UUID | None, document_id: UUID | None) -> AssistantAnswer:
         self.saved = {"message": message, "session": study_session_id, "document": document_id}
@@ -193,3 +206,62 @@ async def test_assistant_routes_require_a_session() -> None:
 
     assert configure.status_code == 401
     assert chat.status_code == 401
+
+
+async def test_listing_models_returns_what_the_provider_offers() -> None:
+    assistant = StubAssistant(
+        listing=(
+            ChatModelInfo(id="claude-sonnet-4-5", display_name="Claude Sonnet 4.5"),
+            ChatModelInfo(id="claude-haiku-4-5"),
+        )
+    )
+    async with client(build(assistant)) as http:
+        response = await http.post("/api/ai-config/models", json={"provider": "anthropic"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "models": [
+            {"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5"},
+            {"id": "claude-haiku-4-5", "display_name": None},
+        ]
+    }
+    # A rota só lista: nada é gravado por pedir a lista.
+    assert assistant.saved == {}
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    (
+        (
+            AssistantCredentialsRejectedError(
+                "the Anthropic provider refused the api key with HTTP 401: check the key "
+                "saved for this provider before listing models"
+            ),
+            422,
+        ),
+        (
+            AssistantUnavailableError(
+                "could not reach http://localhost:11434/v1/models: the connection was refused"
+            ),
+            502,
+        ),
+        (
+            AssistantUnavailableError(
+                "http://localhost:11434/v1/models did not return a model list: the payload "
+                "is not a list of models"
+            ),
+            502,
+        ),
+        (AssistantNotConfiguredError("type the provider key before listing models"), 409),
+    ),
+)
+async def test_a_listing_failure_arrives_with_its_reason(error: Exception, expected: int) -> None:
+    """A tela precisa do motivo, não de uma mensagem genérica: o detalhe vem do domínio."""
+    assistant = StubAssistant(listing_error=error)
+    async with client(build(assistant)) as http:
+        response = await http.post("/api/ai-config/models", json={"provider": "anthropic"})
+
+    assert response.status_code == expected
+    assert response.json()["detail"] == str(error)
+    assert "chave-do-usuario" not in response.text
+

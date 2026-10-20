@@ -23,11 +23,14 @@ function config(overrides: Partial<AIModelConfig> = {}): AIModelConfig {
 function setup(
   props: Partial<Parameters<typeof AIModelPanel>[0]> = {},
   models: AIModelOption[] = [],
+  listingError: ApiError | null = null,
 ) {
   const onSave = vi.fn<(input: AIModelConfigInput) => Promise<boolean>>(() => Promise.resolve(true));
   const onRemove = vi.fn<() => Promise<boolean>>(() => Promise.resolve(true));
+  // `listingError` vale já na primeira chamada: é a listagem automática que falha, como
+  // quando o provedor recusa a chave gravada assim que o painel abre.
   const onListModels = vi.fn<(input: AIModelListInput) => Promise<AIModelOption[]>>(() =>
-    Promise.resolve(models),
+    listingError ? Promise.reject(listingError) : Promise.resolve(models),
   );
   const onReload = vi.fn();
   render(
@@ -240,7 +243,7 @@ describe("AIModelPanel", () => {
 
     // A falha aparece e não fecha a porta: o nome continua digitável e gravável.
     expect(
-      await screen.findByText(/Não há chave para listar os modelos/i),
+      await screen.findByText(/Não há chave para pedir a lista ao provedor/i),
     ).toBeInTheDocument();
     const field = screen.getByLabelText("Modelo");
     expect(field.tagName).toBe("INPUT");
@@ -254,19 +257,77 @@ describe("AIModelPanel", () => {
     expect(submittedInput(onSave).model).toBe("claude-sonnet-4-5");
   });
 
-  it("reports a provider failure when the list does not come, without blocking typing", async () => {
-    const { onListModels, onSave } = setup({}, []);
+  it("shows the reason the server gave when the list does not come", async () => {
+    const { onListModels } = setup();
+    onListModels.mockRejectedValue(
+      new ApiError(
+        502,
+        "could not reach http://localhost:11434/v1/models: the connection was refused",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Carregar modelos" }));
+
+    // O motivo do servidor chega à tela: não é um texto genérico que empurra a digitar.
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Não foi possível obter a lista de modelos do provedor.");
+    expect(alert).toHaveTextContent(
+      "Motivo informado pelo servidor: could not reach http://localhost:11434/v1/models: the connection was refused",
+    );
+  });
+
+  it("keeps the model list when listing fails with a saved configuration", async () => {
+    setup(
+      { config: config() },
+      [],
+      new ApiError(
+        422,
+        "the Anthropic provider refused the api key with HTTP 401: check the key saved for this provider before listing models",
+      ),
+    );
+
+    // A lista falhou, mas o campo continua sendo uma lista — o dono pediu escolha, não digitação.
+    await waitFor(() => expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT"));
+    const field = screen.getByLabelText("Modelo");
+    expect(field).toHaveValue("claude-sonnet-4-5");
+    expect(screen.getByRole("option", { name: "claude-sonnet-4-5" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "outro (digitar)" })).toBeInTheDocument();
+    // O motivo vem do backend e aparece acima do campo.
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("O pedido da lista de modelos foi recusado.");
+    expect(alert).toHaveTextContent(/refused the api key with HTTP 401/);
+    expect(alert.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("stays a list when a reload fails after a good listing", async () => {
+    const { onListModels } = setup({ config: config() }, MODELS);
+    await waitFor(() => expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT"));
+
     onListModels.mockRejectedValue(new ApiError(502, "provider exploded"));
     fireEvent.click(screen.getByRole("button", { name: "Carregar modelos" }));
 
-    expect(
-      await screen.findByText(/O provedor não respondeu à lista de modelos/i),
-    ).toBeInTheDocument();
-    // O erro do provedor não repete nada além do que a tela já sabe.
-    expect(screen.queryByText(/provider exploded/)).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "llama3.1" } });
-    fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
+    // A lista que já estava carregada não é substituída por caixa de texto.
+    await screen.findByRole("alert");
+    const field = screen.getByLabelText("Modelo");
+    expect(field.tagName).toBe("SELECT");
+    expect(field).toHaveValue("claude-sonnet-4-5");
+    expect(screen.getByRole("option", { name: "outro (digitar)" })).toBeInTheDocument();
+  });
+
+  it("only shows the text field after 'outro (digitar)' and saves what was typed", async () => {
+    const { onSave } = setup({ config: config() }, [], new ApiError(502, "provider exploded"));
+    await waitFor(() => expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT"));
+
+    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "__other__" } });
+
+    // A caixa de texto só aparece porque o usuário escolheu digitar, e começa no modelo atual.
+    const typed = screen.getByLabelText("Modelo");
+    expect(typed.tagName).toBe("INPUT");
+    expect(typed).toHaveValue("claude-sonnet-4-5");
+    fireEvent.change(typed, { target: { value: "modelo-local:7b" } });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar configuração" }));
+
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(submittedInput(onSave).model).toBe("modelo-local:7b");
   });
 
   it("keeps the free text field when the configuration model is not in the list", async () => {

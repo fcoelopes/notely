@@ -7,12 +7,18 @@ camada que a issue #8 generaliza para o assistente ancorado.
 A listagem de modelos (issue #25) usa os mesmos headers de cada adapter: o cliente da tela
 pede a lista ao próprio provedor, com a credencial do dono, em vez de manter uma lista fixa
 no código que envelhece em semanas.
+
+As três falhas de listagem são distintas porque exigem ações distintas de quem está na tela:
+credencial recusada (`401`/`403`), provedor inalcançável (DNS, timeout, conexão recusada) e
+resposta fora do formato de lista. Nenhuma delas repete a chave: o motivo vem do tipo do
+erro, não do texto livre da exceção de transporte.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -26,13 +32,40 @@ ANTHROPIC_API_VERSION = "2023-06-01"
 CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
 MODELS_SUFFIX = "/models"
 
+REJECTED_KEY_STATUSES = frozenset({401, 403})
+
 
 class ChatModelUnavailableError(Exception):
     """O provedor não respondeu ou respondeu fora do contrato esperado."""
 
 
 class ChatModelListingError(Exception):
-    """A lista de modelos do provedor não veio, ou veio fora do contrato esperado."""
+    """O endpoint respondeu, mas não com uma lista de modelos."""
+
+    def __init__(
+        self, *, endpoint: str, detail: str = "the payload is not a list of models"
+    ) -> None:
+        self.endpoint = endpoint
+        self.detail = detail
+        super().__init__(f"{endpoint} did not return a model list: {detail}")
+
+
+class ChatModelCredentialsRejectedError(Exception):
+    """O provedor respondeu `401`/`403`: a chave não serve para listar os modelos."""
+
+    def __init__(self, *, endpoint: str, status: int) -> None:
+        self.endpoint = endpoint
+        self.status = status
+        super().__init__(f"the provider refused the api key with HTTP {status} at {endpoint}")
+
+
+class ChatModelUnreachableError(Exception):
+    """O provedor não foi alcançado: DNS, timeout, conexão recusada."""
+
+    def __init__(self, *, endpoint: str, reason: str) -> None:
+        self.endpoint = endpoint
+        self.reason = reason
+        super().__init__(f"could not reach {endpoint}: {reason}")
 
 
 class InvalidModelEndpointError(Exception):
@@ -246,9 +279,41 @@ async def _list_models(
 ) -> tuple[ChatModelInfo, ...]:
     try:
         document = await asyncio.to_thread(_get, endpoint, headers, timeout_seconds)
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        raise ChatModelListingError("the model provider did not return a model list") from exc
-    return _model_list(document)
+    except urllib.error.HTTPError as exc:
+        # `HTTPError` é subclasse de `URLError`: precisa vir antes.
+        if exc.code in REJECTED_KEY_STATUSES:
+            raise ChatModelCredentialsRejectedError(endpoint=endpoint, status=exc.code) from exc
+        raise ChatModelListingError(
+            endpoint=endpoint, detail=f"the provider answered HTTP {exc.code}"
+        ) from exc
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ChatModelListingError(
+            endpoint=endpoint, detail="the answer was not valid json"
+        ) from exc
+    except OSError as exc:
+        # Cobre `URLError`, `socket.gaierror`, `TimeoutError` e conexão recusada; `HTTPError`
+        # é subclasse de `URLError` e já foi tratada acima, por isso vem primeiro.
+        raise ChatModelUnreachableError(
+            endpoint=endpoint, reason=_unreachable_reason(exc)
+        ) from exc
+    return _model_list(document, endpoint)
+
+
+def _unreachable_reason(exc: BaseException) -> str:
+    """Motivo curto e estável da falha de transporte, sem repetir texto do sistema.
+
+    O texto vem do tipo da exceção, não de `str(exc)`: uma mensagem de sistema é livre o
+    bastante para carregar o que não deve sair daqui.
+    """
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, BaseException):
+        return _unreachable_reason(exc.reason)
+    if isinstance(exc, socket.gaierror):
+        return "the host name could not be resolved"
+    if isinstance(exc, ConnectionRefusedError):
+        return "the connection was refused"
+    if isinstance(exc, TimeoutError):
+        return "the request timed out"
+    return "the connection failed"
 
 
 def _get(endpoint: str, headers: dict[str, str], timeout_seconds: float) -> object:
@@ -259,15 +324,18 @@ def _get(endpoint: str, headers: dict[str, str], timeout_seconds: float) -> obje
         return json.loads(response.read().decode("utf-8"))
 
 
-def _model_list(document: object) -> tuple[ChatModelInfo, ...]:
+def _model_list(document: object, endpoint: str) -> tuple[ChatModelInfo, ...]:
     """Lê `{"data": [{"id", "display_name"?}]}`, o formato dos dois provedores.
 
     Entrada sem id utilizável é ignorada: a tela só pode gravar o que o provedor aceita
-    depois como nome de modelo. Lista vazia é resposta legítima — a tela cai no campo livre.
+    depois como nome de modelo. Lista vazia é resposta legítima — o provedor respondeu,
+    apenas não oferece nada que se possa escolher.
     """
     entries = document.get("data") if isinstance(document, dict) else None
     if not isinstance(entries, list):
-        raise ChatModelListingError("the model provider returned an unexpected payload")
+        raise ChatModelListingError(
+            endpoint=endpoint, detail="the payload is not a list of models"
+        )
     models: dict[str, ChatModelInfo] = {}
     for entry in entries:
         if not isinstance(entry, dict):

@@ -121,12 +121,16 @@ Digitar o nome do modelo é onde se erra, e uma lista fixa no código envelhece 
   - `openai_compatible`: a partir do endpoint configurado, troca o sufixo `/chat/completions` por
     `/models`; sem esse sufixo, responde `422` explicando o formato esperado — em vez de tentar
     adivinhar a URL.
-  - Erros distintos: sem configuração nem chave → `409`; falha do provedor → `502` com mensagem
-    clara; a chave nunca aparece em erro, log ou resposta.
+  - Erros distintos, com o motivo na mensagem: sem configuração nem chave → `409`; chave recusada
+    pelo provedor (`401`/`403`) → `422` dizendo qual provedor recusou; provedor inalcançável (DNS,
+    timeout, conexão recusada) → `502` com o endpoint tentado; resposta fora do formato de lista →
+    `502` dizendo que o endpoint não devolveu uma lista. A chave nunca aparece em erro, log ou
+    resposta.
 - **Frontend:** o campo de modelo vira uma lista, com "outro (digitar)" como saída para modelos que
   o provedor não devolve e para endpoints locais. A lista é carregada por um botão explícito
   enquanto não há chave salva, e automaticamente quando já existe configuração. Falha ao listar
-  não impede salvar digitando.
+  mantém a lista: o motivo vem do backend e aparece acima do campo; a caixa de texto só aparece
+  pelo "outro (digitar)". Salvar digitando continua possível quando é isso que o usuário escolhe.
 - **Rótulo do endpoint:** o campo do compatível com OpenAI passa a dizer que é a URL de
   `/chat/completions`, porque é isso que o adapter chama; hoje o rótulo "base URL" induz a erro.
 - **Testes:** listagem com providers falsos (sem rede), os três erros, o fallback de digitar e a
@@ -139,8 +143,12 @@ Digitar o nome do modelo é onde se erra, e uma lista fixa no código envelhece 
   conjuntos de headers que os adapters de chat já usavam (extraídos para `_anthropic_headers` e
   `_openai_compatible_headers`, em vez de repetir strings). Quem decide status HTTP é
   `core/study_assistant.py`, que traduz `InvalidModelEndpointError` em
-  `AssistantInvalidEndpointError` (`422`) e `ChatModelListingError` em `AssistantUnavailableError`
-  (`502`); `409` continua sendo o `AssistantNotConfiguredError` das outras rotas.
+  `AssistantInvalidEndpointError` (`422`), `ChatModelCredentialsRejectedError` em
+  `AssistantCredentialsRejectedError` (`422`, citando o provedor) e `ChatModelUnreachableError` /
+  `ChatModelListingError` em `AssistantUnavailableError` (`502`, com o endpoint tentado na
+  mensagem); `409` continua sendo o `AssistantNotConfiguredError` das outras rotas. O motivo de uma
+  falha de rede vem do tipo da exceção (`ConnectionRefusedError`, `socket.gaierror`, `TimeoutError`),
+  nunca de `str(exc)`: um texto de sistema é livre o bastante para carregar o que não deve sair.
 - **A rota não grava nada.** A chave digitada vale só para aquela chamada; `list_models` lê a
   configuração numa transação de leitura que termina antes do HTTP, como o `ask` faz com o
   contexto.
@@ -149,6 +157,11 @@ Digitar o nome do modelo é onde se erra, e uma lista fixa no código envelhece 
 - **A tela só troca o campo de texto pela lista quando a lista tem algo a oferecer.** Modelo
   gravado que o provedor não devolve mantém o campo livre, em vez de apagar o que está
   configurado. "outro (digitar)" preserva o valor atual no campo de texto.
+- **Falha ao listar não devolve o campo de texto.** O dono pediu escolha, não digitação: se o campo
+  é a lista (ou já era, antes da falha), ele continua lista, com o modelo atual selecionado entre
+  as opções e "outro (digitar)" ao lado; o motivo devolvido pelo backend aparece acima do campo. O
+  campo nasce como texto apenas quando não há configuração alguma e nenhuma lista a oferecer — não
+  há o que escolher antes da primeira listagem bem-sucedida.
 - **A lista é pedida de novo a cada mudança de configuração confirmada.** É uma chamada ao
   provedor por leitura/gravação, aceita em troca de não manter cache de catálogo alheio no
   servidor.
@@ -158,14 +171,15 @@ Digitar o nome do modelo é onde se erra, e uma lista fixa no código envelhece 
 Backend, com banco próprio (`notely_test_modellist`) e transporte do provedor dublado:
 
 - `backend/.venv/bin/python -m pytest` (com `NOTELY_TEST_DATABASE_URL`, `UV_CACHE_DIR` e
-  `DOCKER_CONFIG` exportados): **244 passed** em 147,69 s. Os arquivos novos são
-  `test_model_listing.py` (19 testes, sem rede e sem banco) e
-  `test_integration_model_listing.py` (7 testes contra o PostgreSQL).
+  `DOCKER_CONFIG` exportados): **263 passed** em 86,11 s. Os arquivos novos são
+  `test_model_listing.py` (31 testes, sem rede e sem banco) e
+  `test_integration_model_listing.py` (9 testes contra o PostgreSQL); `test_api_assistant.py`
+  passou de 8 para 13 testes com o contrato de erro da rota de listagem.
 
 Frontend:
 
-- `npm test`: 7 arquivos, **99 testes** passando (`AIModelPanel.test.tsx` com 17 — eram 10 —,
-  `api.test.ts` com 7 — eram 5 —, `App.test.tsx` com 49 — eram 47 —; os demais inalterados).
+- `npm test`: 7 arquivos, **103 testes** passando (`AIModelPanel.test.tsx` com 20 — eram 10 —,
+  `api.test.ts` com 7 — eram 5 —, `App.test.tsx` com 50 — eram 47 —; os demais inalterados).
 - `npm run build`: `tsc -b && vite build` sem erro; só o aviso já existente de tamanho de chunk.
 
 Cada critério de aceite e onde ele é verificado:
@@ -176,17 +190,24 @@ Cada critério de aceite e onde ele é verificado:
 | Sem `api_key`, usa a chave gravada; com ela, usa a digitada e não grava | `test_model_listing.py` "without_a_typed_key_the_stored_key_is_decrypted_and_used" e "a_typed_key_lists_models_before_anything_is_saved"; `test_integration_model_listing.py` "a_typed_key_is_used_without_being_stored" (nenhuma linha em `ai_model_configs`) |
 | `409` sem configuração nem chave | `test_model_listing.py` "listing_without_a_configuration_and_without_a_key_is_a_missing_setup" e "a_configuration_without_a_stored_key_still_needs_the_key"; `test_integration_model_listing.py` "listing_without_a_configuration_and_a_key_is_a_409" |
 | `422` para endpoint sem `/chat/completions`, com o formato esperado | `test_model_listing.py` "an_endpoint_without_the_chat_completions_suffix_is_refused" e "openai_compatible_listing_requires_the_chat_completions_url"; `test_integration_model_listing.py` "a_stored_endpoint_without_the_chat_completions_suffix_is_a_422" (nada é chamado) |
-| `502` para falha do provedor | `test_model_listing.py` "a_failure_of_the_provider_is_reported_without_the_key" e "a_provider_failure_is_an_unavailable_provider"; `test_integration_model_listing.py` "a_provider_failure_is_a_502_without_exposing_the_key" |
+| `422` para chave recusada, citando o provedor | `test_model_listing.py` "a_rejected_key_is_reported_as_a_rejected_key" (`401` e `403`), "a_rejected_key_becomes_a_credentials_error_naming_the_provider" e "a_rejected_typed_key_is_reported_for_the_compatible_provider"; `test_api_assistant.py` "a_listing_failure_arrives_with_its_reason" (422); `test_integration_model_listing.py` "a_rejected_key_is_a_422_naming_the_provider_and_without_the_key" |
+| `502` com o endpoint tentado para provedor inalcançável | `test_model_listing.py` "an_unreachable_provider_is_reported_with_the_endpoint" (recusa, DNS e timeout) e "an_unreachable_provider_is_unavailable_and_says_the_endpoint"; `test_api_assistant.py` "a_listing_failure_arrives_with_its_reason" (502); `test_integration_model_listing.py` "an_unreachable_provider_is_a_502_with_the_endpoint" |
+| `502` para resposta fora do formato de lista | `test_model_listing.py` "a_payload_out_of_shape_is_reported_without_the_key" (sem envelope, JSON inválido, bytes não UTF-8 e `5xx`) e "an_unexpected_payload_is_unavailable_and_says_so"; `test_integration_model_listing.py` "an_unexpected_payload_is_a_502_saying_it_is_not_a_model_list" |
 | A chave não sai em erro, log ou resposta | As asserções `PROVIDER_KEY not in …` nos casos de `422` e `502`; `test_integration_model_listing.py` verifica o corpo da resposta; `App.test.tsx` verifica que a chave digitada não aparece no texto da página |
 | Lista carregada automaticamente com configuração, e por botão sem ela | `AIModelPanel.test.tsx` "lists the provider models automatically when a configuration exists" e "lists on demand with the typed key while there is no saved configuration"; `App.test.tsx` "lists the provider models automatically and saves the chosen one" |
 | Escolha pela lista grava o modelo escolhido | `AIModelPanel.test.tsx` "lists the provider models automatically…" e `App.test.tsx` "lists the provider models automatically and saves the chosen one" (`model` no corpo do `PUT`) |
 | "outro (digitar)" volta ao texto livre preservando a digitação | `AIModelPanel.test.tsx` "goes back to the free text field when 'outro (digitar)' is chosen" e "keeps the free text field when the configuration model is not in the list" |
-| Falha ao listar não impede salvar digitando | `AIModelPanel.test.tsx` "keeps the typed model when the provider list fails" e "reports a provider failure when the list does not come, without blocking typing"; `App.test.tsx` "does not block saving by typing when the model list fails" |
+| Falha ao listar mantém a lista, com o motivo do backend acima do campo | `AIModelPanel.test.tsx` "keeps the model list when listing fails with a saved configuration", "stays a list when a reload fails after a good listing" e "shows the reason the server gave when the list does not come"; `App.test.tsx` "keeps the model as a list when the provider refuses the saved key" |
+| A caixa de texto só aparece pelo "outro (digitar)", e salvar digitando continua possível | `AIModelPanel.test.tsx` "only shows the text field after 'outro (digitar)' and saves what was typed" e "keeps the typed model when the provider list fails"; `App.test.tsx` "does not block saving by typing when the model list fails" |
 | Rótulo do endpoint vira a URL de `/chat/completions` | `AIModelPanel.test.tsx` "requires the chat completions url for openai_compatible…" (rótulo, `placeholder` e ajuda) e `App.test.tsx` "does not send openai_compatible without a base url" |
-| Nenhuma migration, nenhuma dependência nova, três rotas antigas intactas | `git diff` sem `infra/db/migrations` e sem `pyproject.toml`/`package.json`; os testes de `test_api_assistant.py` e `test_study_assistant_config.py` seguem passando sem alteração |
+| Nenhuma migration, nenhuma dependência nova, três rotas antigas intactas | `git diff` sem `infra/db/migrations` e sem `pyproject.toml`/`package.json`; os testes de `test_study_assistant_config.py` e os das rotas `GET`/`PUT`/`DELETE /api/ai-config` seguem passando |
 
 ## Limitações conhecidas (segunda etapa)
 
+- **Sem configuração e sem chave, o campo nasce como texto.** Não há lista a preservar antes da
+  primeira listagem bem-sucedida, e um `select` só com "outro (digitar)" obrigaria a escolher
+  digitar para digitar. A partir da primeira configuração salva o campo é lista, e continua lista
+  mesmo quando a listagem falha.
 - **A lista da Anthropic usa sempre o endpoint oficial.** Quem gravou um `base_url` próprio para a
   Anthropic (um proxy, por exemplo) continua conversando pelo proxy, mas lista os modelos em
   `api.anthropic.com`. O plano pedia o endpoint fixo; respeitar o proxy exigiria saber o caminho

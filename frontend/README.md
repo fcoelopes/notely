@@ -34,7 +34,9 @@ npm run build
 - fontes sugeridas para dúvidas criadas numa sessão, com estado assíncrono, excerto verificável, prévia da página e navegação explícita;
 - afirmações do leitor a partir de um trecho anotado, com evidência visível, remoção e reafirmação que reaproveita a afirmação existente;
 - conceitos das obras da sessão marcados como inferência, com a contagem de trechos e a associação autoral entre dois deles;
-- painel de configuração do modelo de IA na barra lateral, com provedor, modelo escolhido na lista do próprio provedor (ou digitado em "outro"), endpoint, existência de chave e remoção confirmada.
+- painel de configuração do modelo de IA na barra lateral, com provedor, modelo escolhido numa
+  lista que já existe antes da chave (ou digitado em "outro"), endpoint, existência de chave e
+  remoção confirmada.
 
 O download autenticado (multi-usuário) do PDF armazenado fica para quando houver escopo por usuário.
 
@@ -157,26 +159,30 @@ digitado e não impede ler, navegar ou anotar. Ver
 
 ## Lista de modelos do provedor (issue #25)
 
-O nome do modelo deixou de ser digitado às cegas: o campo **Modelo** é uma lista alimentada
-pelo próprio provedor, com **"outro (digitar)"** como saída para o que a lista não traz.
-`POST /api/ai-config/models` recebe `{provider, api_key?, base_url?}` e devolve
-`{models: [{id, display_name?}]}`; a rota não grava nada.
+O nome do modelo não é digitado às cegas: o campo **Modelo** é uma lista, e **"outro (digitar)"**
+é a saída para o que a lista não traz. `POST /api/ai-config/models` recebe
+`{provider, api_key?, base_url?}` e devolve `{models: [{id, display_name?}]}`; a rota não grava
+nada.
 
-- Com configuração salva a lista é pedida **automaticamente**, usando a chave já gravada e o
-  endpoint gravado. Sem configuração, ela sai por um botão explícito, **Carregar modelos**,
-  que envia a chave e o endpoint digitados no formulário — só para aquela chamada.
-- **"outro (digitar)"** volta ao campo de texto livre, já com o modelo atual dentro: é o
-  caminho para endpoints locais e para modelos que o provedor não devolve. Se o modelo
-  gravado não estiver na lista, o painel mantém o campo de texto em vez de apagar o que está
-  configurado.
-- Falha ao listar aparece junto ao campo e **não impede salvar digitando**: `409` é falta de
-  chave, `422` é endpoint que não termina em `/chat/completions`, `502` é provedor que não
-  respondeu.
-- O campo do provedor compatível com OpenAI passou a se chamar **Endpoint de
-  /chat/completions**: é a URL completa que o adapter chama, e é dela que sai a lista de
-  modelos. O rótulo anterior, "base URL", induzia a gravar só o prefixo.
+- A lista **existe antes da chave**: ao escolher o provedor, o campo já traz as sugestões
+  daquele provedor, tiradas de [`src/lib/modelCatalog.ts`](src/lib/modelCatalog.ts), sem chamada
+  nenhuma e sem precisar de chave. Trocar de provedor troca a lista. A ordem do formulário é
+  provedor, modelo, chave, salvar: a chave serve para conectar, não para listar.
+- **"Atualizar do provedor"** é opcional. Ele consulta o provedor com a chave digitada ou, sem
+  ela, com a gravada, e **mescla** o que voltar na lista: os identificadores do provedor se
+  somam às sugestões, sem duplicar, no grupo **Do provedor**. Falhar nessa consulta não altera a
+  lista padrão e não impede escolher nem salvar; o motivo vem do backend (`409` falta de chave,
+  `422` pedido recusado ou endpoint sem `/chat/completions`, `502` provedor que não respondeu).
+- As sugestões de `modelCatalog.ts` são **sugestão**, não catálogo: envelhecem sem aviso e não
+  são validadas contra o provedor. A fonte autoritativa é a resposta do próprio provedor.
+- **"outro (digitar)"** volta ao campo de texto livre, já com o modelo atual dentro: é o caminho
+  para endpoints locais e para modelos que o provedor não devolve. Se o modelo gravado não
+  estiver na lista, o painel o mantém selecionado em vez de apagar o que está configurado.
+- O campo do provedor compatível com OpenAI se chama **Endpoint de /chat/completions**: é a URL
+  completa que o adapter chama, e é dela que sai a consulta de modelos. O rótulo anterior, "base
+  URL", induzia a gravar só o prefixo.
 
-A lista é só conveniência: o que vale é o que a pessoa grava, e a tela nunca transforma
-resposta de provedor em configuração sem o envio do formulário. Ver
+A lista é só conveniência: o que vale é o que a pessoa grava, e a tela nunca transforma resposta
+de provedor em configuração sem o envio do formulário. Ver
 [plano](../future/tela-modelo-de-ia.md) e
 [issue #25](https://github.com/fcoelopes/notely/issues/25).

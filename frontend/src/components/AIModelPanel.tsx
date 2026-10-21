@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../lib/api";
+import { MODEL_SUGGESTIONS, mergeModelChoices } from "../lib/modelCatalog";
 import type {
   AIModelConfig,
   AIModelConfigInput,
@@ -23,6 +24,10 @@ const PROVIDER_HINTS: Record<AIModelProvider, string> = {
 const OTHER_MODEL = "__other__";
 const OTHER_MODEL_LABEL = "outro (digitar)";
 
+/** Nome do grupo de opções que o provedor confirmou, para separar das sugestões locais. */
+const PROVIDER_GROUP_LABEL = "Do provedor";
+const SUGGESTION_GROUP_LABEL = "Sugestões";
+
 interface Props {
   config: AIModelConfig | null;
   /** A configuração ainda está sendo lida do servidor. */
@@ -35,47 +40,54 @@ interface Props {
   onSave: (input: AIModelConfigInput) => Promise<boolean>;
   /** Remove a configuração depois da confirmação no próprio painel. */
   onRemove: () => Promise<boolean>;
-  /** Pede ao provedor a lista de modelos. A falha não impede salvar digitando. */
+  /**
+   * Consulta opcional ao provedor. A lista padrão do painel não depende dela: falhar aqui não
+   * muda o que está no campo nem impede escolher e salvar.
+   */
   onListModels: (input: AIModelListInput) => Promise<AIModelOption[]>;
   onReload: () => void;
 }
 
 /**
- * Mensagem da falha de listagem.
+ * Mensagem da falha da consulta ao provedor.
  *
  * O motivo vem do servidor — chave recusada pelo provedor, endpoint inalcançável, resposta
  * fora do formato de lista —, porque é o backend que falou com o provedor. Aqui ele só é
- * enquadrado em português: nada de "digite o nome" aqui, porque o campo continua sendo a
- * lista, com "outro (digitar)" para quem quiser escrever por decisão própria. A chave nunca
- * é repetida: o servidor não a devolve.
+ * enquadrado em português, e sempre depois de dizer que a lista padrão continua valendo: a
+ * falha é da consulta opcional, não da escolha. A chave nunca é repetida: o servidor não a
+ * devolve.
  */
 const LISTING_LEADS: Record<number, string> = {
   409: "Não há chave para pedir a lista ao provedor.",
   422: "O pedido da lista de modelos foi recusado.",
 };
 const LISTING_LEAD = "Não foi possível obter a lista de modelos do provedor.";
+const LISTING_KEEPS = "A lista do painel continua igual: escolher e salvar não dependem disso.";
 
 function listingFailure(caught: unknown): string {
-  if (!(caught instanceof ApiError)) return LISTING_LEAD;
+  if (!(caught instanceof ApiError)) return `${LISTING_LEAD} ${LISTING_KEEPS}`;
   const lead = LISTING_LEADS[caught.status] ?? LISTING_LEAD;
   const reason = caught.message.trim();
-  if (!reason) return lead;
-  return `${lead} Motivo informado pelo servidor: ${reason}`;
+  if (!reason) return `${lead} ${LISTING_KEEPS}`;
+  return `${lead} Motivo informado pelo servidor: ${reason} ${LISTING_KEEPS}`;
 }
 
 /**
  * Configuração do modelo de IA do dono, na barra lateral do Reader.
+ *
+ * A ordem do formulário é provedor, modelo, chave, salvar, porque a chave serve para
+ * conectar, não para listar: ao escolher o provedor a lista de modelos já está ali, vinda do
+ * catálogo local de sugestões, sem chamada nenhuma e sem exigir chave. A consulta ao provedor
+ * — "Atualizar do provedor" — é opcional, usa a chave digitada ou a gravada e apenas mescla o
+ * que voltar na lista; se falhar, a lista padrão continua intacta e a escolha não é afetada.
  *
  * O painel mostra o que a API devolve — provedor, modelo, endpoint, se há chave — e nunca a
  * chave: o campo nasce vazio e, deixado vazio, mantém a chave já gravada, de modo que trocar
  * de modelo não obriga a redigitar o segredo. Os campos do formulário só são reescritos
  * quando a configuração confirmada muda, então uma falha da API preserva o que foi digitado.
  *
- * O modelo é escolhido na lista que o próprio provedor devolve. Com configuração salva a
- * lista é carregada automaticamente; sem ela, o botão explícito pede a chave e então lista.
- * Quando a lista não vem, o campo continua sendo uma lista — com o modelo atual e "outro
- * (digitar)" — e o motivo da falha aparece acima dele; a caixa de texto só aparece quando o
- * usuário escolhe "outro", de propósito.
+ * O campo de modelo é sempre uma lista; a caixa de texto só aparece quando o usuário escolhe
+ * "outro (digitar)", de propósito.
  */
 export function AIModelPanel({
   config,
@@ -96,73 +108,63 @@ export function AIModelPanel({
   const [enabled, setEnabled] = useState(config?.enabled ?? true);
   const [confirmingRemoval, setConfirmingRemoval] = useState(false);
   const [pending, setPending] = useState<"save" | "remove" | null>(null);
-  const [options, setOptions] = useState<AIModelOption[] | null>(null);
+  /** O que o provedor devolveu na última consulta, para o provedor escolhido. */
+  const [remoteOptions, setRemoteOptions] = useState<AIModelOption[]>([]);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [loadingOptions, setLoadingOptions] = useState(false);
-  // O campo começa como texto porque ainda não há lista alguma para oferecer. Depois da
-  // primeira listagem, quem manda é ela: só o usuário, escolhendo "outro (digitar)", sai
-  // da lista — uma falha de rede não troca o campo por uma caixa de texto.
-  const [typingModel, setTypingModel] = useState(!config);
+  // A caixa de texto é exceção: só aparece porque o usuário escolheu "outro (digitar)".
+  const [typingModel, setTypingModel] = useState(false);
+  // Descarta a resposta de uma consulta que ficou para trás quando o provedor mudou no meio.
+  const listRequest = useRef(0);
 
   const hasKey = config?.has_key ?? false;
   const needsBaseUrl = provider === "openai_compatible";
   const missingBaseUrl = needsBaseUrl && !baseUrl.trim();
   const canSave = !busy && pending === null && Boolean(model.trim()) && !missingBaseUrl;
-  const listed = options ?? [];
-  const modelInList = listed.some((option) => option.id === model);
-  // O campo é lista quando a lista veio do provedor ou quando a listagem falhou: nos dois
-  // casos há escolha a oferecer, e o modelo atual aparece mesmo fora da lista devolvida.
-  const showModelList = !typingModel && (listed.length > 0 || optionsError !== null);
+  const choices = mergeModelChoices(provider, remoteOptions);
+  const providerChoices = choices.filter((choice) => choice.origin === "provedor");
+  const suggestionChoices = choices.filter((choice) => choice.origin === "sugestao");
+  const modelInList = choices.some((choice) => choice.id === model);
 
   // A configuração só muda aqui depois do sucesso da API. Sem configuração o formulário
-  // volta vazio; com ela, reflete o que o servidor confirmou. A chave nunca é reescrita.
+  // volta vazio; com ela, reflete o que o servidor confirmou. A chave nunca é reescrita, e a
+  // lista que veio do provedor é descartada: ela é do provedor e do modelo anteriores.
   useEffect(() => {
     setProvider(config?.provider ?? "anthropic");
     setModel(config?.model ?? "");
     setBaseUrl(config?.base_url ?? "");
     setEnabled(config?.enabled ?? true);
+    setRemoteOptions([]);
+    setOptionsError(null);
+    setLoadingOptions(false);
+    setTypingModel(false);
+    listRequest.current += 1;
   }, [config]);
 
-  // Com configuração salva existe chave no servidor: a lista é pedida automaticamente,
-  // com o provedor e o endpoint gravados. Sem configuração quem dispara é o botão, porque
-  // a chave ainda precisa ser digitada.
-  useEffect(() => {
-    if (!config) {
-      setOptions(null);
-      setOptionsError(null);
-      setLoadingOptions(false);
-      setTypingModel(true);
-      return;
-    }
-    let active = true;
-    setLoadingOptions(true);
+  /** Troca o provedor e, com ele, a lista: o modelo do provedor anterior não vale aqui. */
+  const changeProvider = (next: AIModelProvider) => {
+    listRequest.current += 1;
+    setProvider(next);
+    setRemoteOptions([]);
     setOptionsError(null);
-    onListModels({ provider: config.provider, base_url: config.base_url })
-      .then((loaded) => {
-        if (!active) return;
-        setOptions(loaded);
-        // Modelo gravado que o provedor não devolve (endpoint local, versão nova) continua
-        // no campo de texto: a lista não pode apagar o que já estava configurado.
-        setTypingModel(!loaded.some((option) => option.id === config.model));
-      })
-      .catch((caught: unknown) => {
-        if (!active) return;
-        setOptions(null);
-        setOptionsError(listingFailure(caught));
-        // O campo continua a lista: o modelo gravado segue selecionado nela e "outro
-        // (digitar)" está ali para quem quiser escrever outro nome.
-      })
-      .finally(() => {
-        if (active) setLoadingOptions(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [config, onListModels]);
+    setLoadingOptions(false);
+    setTypingModel(false);
+    setModel((current) => {
+      if (MODEL_SUGGESTIONS[next].some((suggestion) => suggestion.id === current)) return current;
+      // Voltar ao provedor da configuração devolve o modelo gravado, mesmo fora do catálogo; o
+      // que é de outro provedor sai do campo, em vez de ser gravado no lugar errado.
+      if (next === config?.provider && !current.trim()) return config?.model ?? "";
+      return "";
+    });
+  };
 
-  // A lista pedida pelo botão usa o que está no formulário: a chave digitada vale só para
-  // esta chamada, e o endpoint digitado decide a URL da lista.
-  const loadModels = async () => {
+  /**
+   * Consulta opcional ao provedor. A chave digitada vale só para esta chamada; sem ela, o
+   * servidor usa a que está gravada. O endpoint digitado decide a URL da consulta.
+   */
+  const refreshFromProvider = async () => {
+    const request = listRequest.current + 1;
+    listRequest.current = request;
     setLoadingOptions(true);
     setOptionsError(null);
     try {
@@ -171,17 +173,15 @@ export function AIModelPanel({
         api_key: apiKey.trim() || undefined,
         base_url: needsBaseUrl ? baseUrl.trim() || null : null,
       });
-      setOptions(loaded);
-      // Um modelo já digitado que a lista não traz continua no campo de texto; sem modelo
-      // escolhido, o campo passa a ser a lista.
-      setTypingModel(model.trim() !== "" && !loaded.some((option) => option.id === model));
+      if (request !== listRequest.current) return;
+      // Mescla com o catálogo local: o que o provedor devolveu confirma, corrige e acrescenta.
+      setRemoteOptions(loaded);
     } catch (caught) {
-      setOptions(null);
+      if (request !== listRequest.current) return;
+      // A lista padrão não é tocada: a falha é da consulta, não da escolha.
       setOptionsError(listingFailure(caught));
-      // Sem lista, o campo continua sendo a lista, com o modelo atual: trocá-lo por caixa
-      // de texto esconderia a escolha que o painel oferece.
     } finally {
-      setLoadingOptions(false);
+      if (request === listRequest.current) setLoadingOptions(false);
     }
   };
 
@@ -244,8 +244,8 @@ export function AIModelPanel({
         <div className="panel-empty panel-empty--compact">
           <p>Nenhum modelo de IA configurado.</p>
           <small>
-            Cadastre o provedor e a chave para usar o assistente e a extração de conceitos.
-            A chave fica cifrada no servidor e não volta para esta tela.
+            Escolha o provedor, escolha o modelo na lista e informe a chave. A chave fica
+            cifrada no servidor e não volta para esta tela.
           </small>
         </div>
       )}
@@ -276,12 +276,7 @@ export function AIModelPanel({
           <select
             aria-label="Provedor do modelo"
             id="ai-config-provider"
-            onChange={(event) => {
-              setProvider(event.target.value as AIModelProvider);
-              // A lista é do provedor anterior: some até ser pedida de novo.
-              setOptions(null);
-              setOptionsError(null);
-            }}
+            onChange={(event) => changeProvider(event.target.value as AIModelProvider)}
             value={provider}
           >
             <option value="anthropic">{PROVIDER_LABELS.anthropic}</option>
@@ -292,13 +287,22 @@ export function AIModelPanel({
 
         <div className="ai-config-field">
           <label htmlFor="ai-config-model">Modelo</label>
-          {/* O motivo da falha fica acima do campo: é o que explica a lista incompleta. */}
+          {/* O motivo da falha fica acima do campo: é o que explica a consulta que não veio. */}
           {optionsError && (
             <p className="ai-config-list-error" role="alert">
               {optionsError}
             </p>
           )}
-          {showModelList ? (
+          {typingModel ? (
+            <input
+              aria-label="Modelo"
+              id="ai-config-model"
+              maxLength={200}
+              onChange={(event) => setModel(event.target.value)}
+              placeholder={needsBaseUrl ? "ex.: llama3.1" : "ex.: claude-sonnet-4-5"}
+              value={model}
+            />
+          ) : (
             <select
               aria-label="Modelo"
               id="ai-config-model"
@@ -316,33 +320,37 @@ export function AIModelPanel({
               {model === "" && <option value="">Escolha um modelo</option>}
               {/* Modelo atual que a lista não traz continua selecionado, em vez de sumir. */}
               {model !== "" && !modelInList && <option value={model}>{model}</option>}
-              {listed.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.display_name ?? option.id}
-                </option>
-              ))}
+              {providerChoices.length > 0 && (
+                <optgroup label={PROVIDER_GROUP_LABEL}>
+                  {providerChoices.map((choice) => (
+                    <option key={choice.id} value={choice.id}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {suggestionChoices.length > 0 && (
+                <optgroup label={SUGGESTION_GROUP_LABEL}>
+                  {suggestionChoices.map((choice) => (
+                    <option key={choice.id} value={choice.id}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
               <option value={OTHER_MODEL}>{OTHER_MODEL_LABEL}</option>
             </select>
-          ) : (
-            <input
-              aria-label="Modelo"
-              id="ai-config-model"
-              maxLength={200}
-              onChange={(event) => setModel(event.target.value)}
-              placeholder={needsBaseUrl ? "ex.: llama3.1" : "ex.: claude-sonnet-4-5"}
-              value={model}
-            />
           )}
           <div className="ai-config-model-actions">
             <button
               className="ai-config-list"
               disabled={loadingOptions || busy || pending !== null}
-              onClick={() => void loadModels()}
+              onClick={() => void refreshFromProvider()}
               type="button"
             >
-              {loadingOptions ? "Carregando…" : "Carregar modelos"}
+              {loadingOptions ? "Consultando o provedor…" : "Atualizar do provedor"}
             </button>
-            {listOptionsHint(showModelList, listed.length)}
+            {listOptionsHint(providerChoices.length)}
           </div>
         </div>
 
@@ -364,7 +372,7 @@ export function AIModelPanel({
             ) : (
               <small>
                 A URL completa de /chat/completions do provedor, com o caminho que ele expõe:
-                é ela que o assistente chama e dela sai a lista de modelos.
+                é ela que o assistente chama e é dela que sai a consulta de modelos.
               </small>
             )}
           </div>
@@ -399,6 +407,8 @@ export function AIModelPanel({
               ? "Deixe em branco para manter a chave já gravada: ela não é exibida de novo."
               : "Sem chave o modelo não responde: ela é cifrada no servidor e nunca volta para esta tela."}
           </small>
+          {/* A chave conecta; ela não é condição para a lista acima existir. */}
+          <small>A chave serve para conectar: a lista de modelos acima não depende dela.</small>
         </div>
 
         <label className="ai-config-toggle">
@@ -472,27 +482,25 @@ export function AIModelPanel({
   );
 }
 
-/** Diz de onde veio o que está no campo, para a lista não parecer uma caixa qualquer. */
-function listOptionsHint(showModelList: boolean, count: number) {
-  if (showModelList && count > 0) {
+/** Diz de onde veio o que está no campo e que a consulta ao provedor é opcional. */
+function listOptionsHint(providerCount: number) {
+  if (providerCount > 0) {
     return (
       <small className="ai-config-list-hint">
-        {count} modelos devolvidos pelo provedor. Para um modelo que não está na lista,
-        escolha &quot;{OTHER_MODEL_LABEL}&quot;.
-      </small>
-    );
-  }
-  if (showModelList) {
-    return (
-      <small className="ai-config-list-hint">
-        A lista não veio, mas o campo continua sendo a escolha: o modelo atual segue
-        selecionado e &quot;{OTHER_MODEL_LABEL}&quot; abre o nome escrito à mão.
+        {providerCount === 1
+          ? "1 modelo veio do provedor."
+          : `${providerCount} modelos vieram do provedor.`}{" "}
+        As opções em &quot;{SUGGESTION_GROUP_LABEL}&quot; são sugestões do painel e podem
+        estar desatualizadas. Para um modelo que não está na lista, escolha &quot;
+        {OTHER_MODEL_LABEL}&quot;.
       </small>
     );
   }
   return (
     <small className="ai-config-list-hint">
-      Digite o nome do modelo ou carregue a lista do provedor.
+      A lista é uma sugestão do painel e pode estar desatualizada; consultar o provedor é
+      opcional e usa a chave digitada ou a gravada. Para um modelo fora da lista, escolha
+      &quot;{OTHER_MODEL_LABEL}&quot;.
     </small>
   );
 }

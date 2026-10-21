@@ -436,8 +436,8 @@ describe("App", () => {
     // A configuração de modelo vive no servidor e nunca devolve a chave: aqui a leitura
     // reflete o que foi gravado, e a gravação sem chave mantém a que já existia.
     api.getAIModelConfig.mockImplementation(() => Promise.resolve(currentAIConfig));
-    // Sem lista, o campo de modelo continua sendo texto livre: é o que os testes abaixo
-    // esperam, exceto os que pedem a lista ao provedor.
+    // A consulta ao provedor é opcional e só acontece pelo botão "Atualizar do provedor":
+    // por padrão ela devolve lista vazia, que deixa o catálogo local de sugestões intacto.
     api.listAIModelOptions.mockResolvedValue([]);
     api.saveAIModelConfig.mockImplementation((input: AIModelConfigInput) => {
       currentAIConfig = {
@@ -1428,6 +1428,10 @@ describe("App", () => {
     expect(await screen.findByText("Nenhum modelo de IA configurado.")).toBeInTheDocument();
     expect(screen.getByLabelText("Modelo")).toHaveValue("");
     expect(screen.getByLabelText("Chave da API")).toHaveValue("");
+    // A lista do provedor já está no campo, sem chave digitada e sem nenhuma consulta.
+    expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT");
+    expect(screen.getByRole("option", { name: "Claude Sonnet 4.5" })).toBeInTheDocument();
+    expect(api.listAIModelOptions).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByLabelText("Modelo"), {
       target: { value: "claude-sonnet-4-5" },
@@ -1448,7 +1452,7 @@ describe("App", () => {
 
     // O painel passa a mostrar o que o servidor confirmou, só com o fato de existir chave.
     expect(await screen.findByText("gravada no servidor")).toBeInTheDocument();
-    expect(screen.getByText("claude-sonnet-4-5")).toBeInTheDocument();
+    expect(screen.getAllByText("claude-sonnet-4-5").length).toBeGreaterThan(0);
     expect(screen.getByLabelText("Chave da API")).toHaveValue("");
     expect(document.body.textContent).not.toContain("chave-ficticia-de-teste");
   });
@@ -1464,22 +1468,22 @@ describe("App", () => {
     await startSession({ theme: "tema", openPanels: false });
     fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
     openSidebarDetails("Modelo de IA");
-    expect(await screen.findByText("claude-sonnet-4-5")).toBeInTheDocument();
+    expect((await screen.findAllByText("claude-sonnet-4-5")).length).toBeGreaterThan(0);
     expect(screen.getByText("gravada no servidor")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Modelo"), {
-      target: { value: "claude-opus-4-5" },
+      target: { value: "claude-opus-4-1" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Salvar configuração" }));
 
     await waitFor(() => expect(api.saveAIModelConfig).toHaveBeenCalledTimes(1));
     expect(api.saveAIModelConfig.mock.calls[0][0].api_key).toBeUndefined();
     // Os campos atualizam e a chave continua gravada, sem ter sido redigitada.
-    expect(await screen.findByText("claude-opus-4-5")).toBeInTheDocument();
+    expect((await screen.findAllByText("claude-opus-4-1")).length).toBeGreaterThan(0);
     expect(screen.getByText("gravada no servidor")).toBeInTheDocument();
   });
 
-  it("lists the provider models automatically and saves the chosen one", async () => {
+  it("refreshes the model list from the provider on demand and saves the chosen one", async () => {
     currentAIConfig = {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
@@ -1495,15 +1499,25 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
     openSidebarDetails("Modelo de IA");
 
-    // Com configuração salva a lista é pedida sozinha, com o que está gravado no servidor.
+    // Abrir o painel não consulta o provedor: a lista padrão já permite escolher e salvar.
+    await screen.findByText("gravada no servidor");
+    expect(api.listAIModelOptions).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT");
+    expect(screen.getByLabelText("Modelo")).toHaveValue("claude-sonnet-4-5");
+
+    // A consulta é opcional e usa a chave gravada no servidor.
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar do provedor" }));
     await waitFor(() =>
       expect(api.listAIModelOptions).toHaveBeenCalledWith({
         provider: "anthropic",
         base_url: null,
       }),
     );
-    await waitFor(() => expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT"));
-    expect(screen.getByLabelText("Modelo")).toHaveValue("claude-sonnet-4-5");
+    // O que o provedor devolveu se soma às sugestões, sem duplicar, e vem marcado.
+    expect(
+      await screen.findByRole("option", { name: "Claude Opus 4.5" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Modelo").querySelectorAll('option[value="claude-sonnet-4-5"]')).toHaveLength(1);
 
     fireEvent.change(screen.getByLabelText("Modelo"), {
       target: { value: "claude-opus-4-5" },
@@ -1518,10 +1532,10 @@ describe("App", () => {
       base_url: null,
       enabled: true,
     });
-    expect(await screen.findByText("claude-opus-4-5")).toBeInTheDocument();
+    expect((await screen.findAllByText("claude-opus-4-5")).length).toBeGreaterThan(0);
   });
 
-  it("does not block saving by typing when the model list fails", async () => {
+  it("does not block choosing and saving when the model list fails", async () => {
     api.listAIModelOptions.mockRejectedValue(
       new ApiError(
         502,
@@ -1536,16 +1550,17 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Chave da API"), {
       target: { value: "chave-ficticia-de-teste" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Carregar modelos" }));
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar do provedor" }));
 
-    // A falha aparece na tela com o motivo que o servidor deu, e o nome digitado continua
-    // valendo: sem lista e sem configuração não há o que escolher, então o campo é texto.
+    // A falha aparece na tela com o motivo que o servidor deu, e a lista padrão continua
+    // inteira: escolher e salvar não dependem da consulta.
     expect(
       await screen.findByText(/Não foi possível obter a lista de modelos do provedor/),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/could not reach http:\/\/localhost:11434\/v1\/models/),
     ).toBeInTheDocument();
+    expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT");
     fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "claude-sonnet-4-5" } });
     fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
 
@@ -1572,6 +1587,8 @@ describe("App", () => {
     await startSession({ theme: "tema", openPanels: false });
     fireEvent.click(screen.getByRole("button", { name: "Anotações 0" }));
     openSidebarDetails("Modelo de IA");
+    await screen.findByText("gravada no servidor");
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar do provedor" }));
 
     // O erro diz que o provedor recusou a chave, e mesmo assim o campo continua lista.
     expect(
@@ -1593,7 +1610,7 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Provedor do modelo"), {
       target: { value: "openai_compatible" },
     });
-    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "llama3.1" } });
+    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "gpt-4o" } });
     const save = screen.getByRole("button", { name: "Cadastrar modelo" });
     expect(save).toBeDisabled();
     expect(screen.getByText(/exige a URL de \/chat\/completions antes de gravar/)).toBeInTheDocument();
@@ -1644,7 +1661,7 @@ describe("App", () => {
     await screen.findByText("Nenhum modelo de IA configurado.");
 
     fireEvent.change(screen.getByLabelText("Modelo"), {
-      target: { value: "modelo-que-nao-grava" },
+      target: { value: "claude-haiku-4-5-latest" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
 
@@ -1652,8 +1669,8 @@ describe("App", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Não foi possível gravar a configuração.",
     );
-    // O que foi digitado continua no formulário, e a leitura segue funcionando.
-    expect(screen.getByLabelText("Modelo")).toHaveValue("modelo-que-nao-grava");
+    // O que foi escolhido continua no formulário, e a leitura segue funcionando.
+    expect(screen.getByLabelText("Modelo")).toHaveValue("claude-haiku-4-5-latest");
     fireEvent.click(screen.getByRole("button", { name: "Próxima página" }));
     expect(document.querySelector(".react-pdf__Page")).toHaveAttribute("data-page-number", "2");
   });

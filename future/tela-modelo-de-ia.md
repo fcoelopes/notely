@@ -128,7 +128,9 @@ Digitar o nome do modelo é onde se erra, e uma lista fixa no código envelhece 
     resposta.
 - **Frontend:** o campo de modelo vira uma lista, com "outro (digitar)" como saída para modelos que
   o provedor não devolve e para endpoints locais. A lista é carregada por um botão explícito
-  enquanto não há chave salva, e automaticamente quando já existe configuração. Falha ao listar
+  enquanto não há chave salva, e automaticamente quando já existe configuração (revisto adiante em
+  **Lista antes da chave**: a lista passou a existir antes da chave e a consulta ficou opcional).
+  Falha ao listar
   mantém a lista: o motivo vem do backend e aparece acima do campo; a caixa de texto só aparece
   pelo "outro (digitar)". Salvar digitando continua possível quando é isso que o usuário escolhe.
 - **Rótulo do endpoint:** o campo do compatível com OpenAI passa a dizer que é a URL de
@@ -207,7 +209,8 @@ Cada critério de aceite e onde ele é verificado:
 - **Sem configuração e sem chave, o campo nasce como texto.** Não há lista a preservar antes da
   primeira listagem bem-sucedida, e um `select` só com "outro (digitar)" obrigaria a escolher
   digitar para digitar. A partir da primeira configuração salva o campo é lista, e continua lista
-  mesmo quando a listagem falha.
+  mesmo quando a listagem falha. (Resolvido em **Lista antes da chave**: o catálogo local dá a
+  lista desde o primeiro instante, então o campo é lista sempre.)
 - **A lista da Anthropic usa sempre o endpoint oficial.** Quem gravou um `base_url` próprio para a
   Anthropic (um proxy, por exemplo) continua conversando pelo proxy, mas lista os modelos em
   `api.anthropic.com`. O plano pedia o endpoint fixo; respeitar o proxy exigiria saber o caminho
@@ -217,10 +220,45 @@ Cada critério de aceite e onde ele é verificado:
   usa "outro (digitar)".
 - **Cada abertura do painel com configuração salva (e cada gravação) faz uma chamada ao
   provedor.** Não há cache de catálogo: ele muda sem aviso e um cache no servidor poderia servir
-  lista velha para outra chave.
+  lista velha para outra chave. (Deixou de valer em **Lista antes da chave**: a consulta só
+  acontece pelo botão.)
 - **A listagem não valida a escolha.** Escolher um modelo da lista não prova que a chave tem
   acesso a ele; isso continua aparecendo no primeiro uso, como antes.
 - **A chave digitada trafega para a listagem mesmo sem ser gravada.** É inevitável: o provedor não
   lista modelos sem credencial. Ela não é persistida por essa rota.
 - **Nenhum teste de ponta a ponta contra provedor real**: os adapters são testados com o
   transporte dublado, e a integração usa o PostgreSQL de verdade mas não a rede.
+
+## Lista antes da chave
+
+A segunda etapa entregou a lista, mas a listou **com a credencial**: sem configuração salva, o
+campo nascia como texto e só virava lista depois de uma chamada ao provedor com uma chave que a
+pessoa ainda não tinha digitado. Na prática, quem escolhia o provedor não conseguia escolher
+modelo nenhum. O comportamento correto é o inverso:
+
+- **A lista de modelos existe antes e independentemente da chave.** Ao escolher o provedor, o
+  campo de modelo já é a lista daquele provedor, preenchida a partir de
+  `frontend/src/lib/modelCatalog.ts` (`MODEL_SUGGESTIONS`), com **zero chamadas**. Trocar de
+  provedor troca a lista. A ordem do formulário passa a ser provedor, modelo, chave, salvar: a
+  chave conecta, não lista. A regra de "carregar a lista antes de escolher ou salvar" deixou de
+  existir, junto com a caixa de texto como estado inicial.
+- **A lista padrão é sugestão, não catálogo.** É um arquivo curto e comentado que envelhece em
+  semanas e não é validado contra provedor nenhum. Ele existe para destravar a escolha, não para
+  ser a verdade.
+- **A consulta ao provedor é a fonte autoritativa, e é opcional.** O botão "Atualizar do
+  provedor" usa a chave digitada ou a gravada, e o que volta é **mesclado** na lista — os
+  identificadores do provedor somados às sugestões, sem duplicar, marcados no grupo "Do
+  provedor". A consulta deixou de ser automática ao abrir o painel: ela é um ato explícito, e
+  cada abertura deixou de custar uma chamada ao provedor (a limitação "cada abertura faz uma
+  chamada" cai).
+- **Falha da consulta não tem poder sobre a escolha.** Nada da lista padrão é alterado, o motivo
+  devolvido pelo backend aparece acima do campo e escolher e salvar seguem funcionando. "outro
+  (digitar)" continua sendo a única porta para a caixa de texto.
+
+Verificação da correção (frontend, API dublada): `AIModelPanel.test.tsx` cobre a lista por
+provedor sem chamada, a troca de provedor, a escolha salva com chave sem nunca consultar o
+provedor, "outro (digitar)" e a mesclagem sem duplicar; `App.test.tsx` cobre o mesmo caminho pela
+tela, a falha da consulta opcional e a ausência da chave no texto da página. `npm test`: 7
+arquivos, 104 testes (`AIModelPanel.test.tsx` com 21, `App.test.tsx` com 50). `npm run build` sem
+erro, só o aviso já existente de tamanho de chunk. Nenhuma migration, dependência nova ou rota
+alterada.

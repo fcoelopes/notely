@@ -2,11 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AIModelPanel } from "./AIModelPanel";
 import { ApiError } from "../lib/api";
+import { MODEL_SUGGESTIONS } from "../lib/modelCatalog";
 import type { AIModelConfig, AIModelConfigInput, AIModelListInput, AIModelOption } from "../types";
 
 const MODELS: AIModelOption[] = [
-  { id: "claude-sonnet-4-5", display_name: "Claude Sonnet 4.5" },
-  { id: "claude-haiku-4-5", display_name: null },
+  { id: "claude-sonnet-4-5", display_name: "Claude Sonnet 4.5 (provedor)" },
+  { id: "claude-opus-4-5", display_name: "Claude Opus 4.5" },
 ];
 
 function config(overrides: Partial<AIModelConfig> = {}): AIModelConfig {
@@ -27,8 +28,6 @@ function setup(
 ) {
   const onSave = vi.fn<(input: AIModelConfigInput) => Promise<boolean>>(() => Promise.resolve(true));
   const onRemove = vi.fn<() => Promise<boolean>>(() => Promise.resolve(true));
-  // `listingError` vale já na primeira chamada: é a listagem automática que falha, como
-  // quando o provedor recusa a chave gravada assim que o painel abre.
   const onListModels = vi.fn<(input: AIModelListInput) => Promise<AIModelOption[]>>(() =>
     listingError ? Promise.reject(listingError) : Promise.resolve(models),
   );
@@ -55,19 +54,85 @@ function submittedInput(onSave: ReturnType<typeof setup>["onSave"]): AIModelConf
   return input as AIModelConfigInput;
 }
 
+/** Valores das opções oferecidas no campo de modelo, na ordem em que aparecem. */
+function optionValues(): string[] {
+  const field = screen.getByLabelText("Modelo");
+  return Array.from(field.querySelectorAll("option")).map((option) => option.value);
+}
+
+/** Rótulos dos grupos de opções: separa o que veio do provedor do que é sugestão local. */
+function optionGroups(): string[] {
+  const field = screen.getByLabelText("Modelo");
+  return Array.from(field.querySelectorAll("optgroup")).map((group) => group.label);
+}
+
 afterEach(cleanup);
 
 describe("AIModelPanel", () => {
-  it("shows an empty form and says that there is no model configured", () => {
+  it("shows an empty form with the provider model list and no call at all", () => {
     const { onListModels } = setup();
+
     expect(screen.getByText("Nenhum modelo de IA configurado.")).toBeInTheDocument();
-    expect(screen.getByLabelText("Modelo")).toHaveValue("");
+    // O campo de modelo já é a lista do provedor escolhido: nenhuma chave, nenhuma chamada.
+    const field = screen.getByLabelText("Modelo");
+    expect(field.tagName).toBe("SELECT");
+    expect(field).toHaveValue("");
+    expect(optionValues()).toEqual([
+      "",
+      ...MODEL_SUGGESTIONS.anthropic.map((suggestion) => suggestion.id),
+      "__other__",
+    ]);
+    expect(screen.getByRole("option", { name: "Claude Sonnet 4.5" })).toBeInTheDocument();
     expect(screen.getByLabelText("Chave da API")).toHaveValue("");
     expect(screen.getByRole("button", { name: "Cadastrar modelo" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Remover configuração" })).not.toBeInTheDocument();
-    // Sem chave gravada a lista não é pedida sozinha: quem dispara é o botão.
     expect(onListModels).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Carregar modelos" })).toBeInTheDocument();
+  });
+
+  it("switches the model list with the chosen provider, still without a call", () => {
+    const { onListModels } = setup();
+    fireEvent.change(screen.getByLabelText("Provedor do modelo"), {
+      target: { value: "openai_compatible" },
+    });
+
+    // A troca de provedor troca a lista na hora, e o modelo do provedor anterior sai do campo.
+    expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT");
+    expect(screen.getByLabelText("Modelo")).toHaveValue("");
+    expect(optionValues()).toEqual([
+      "",
+      ...MODEL_SUGGESTIONS.openai_compatible.map((suggestion) => suggestion.id),
+      "__other__",
+    ]);
+    expect(screen.getByRole("option", { name: "GPT-4o" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Claude Sonnet 4.5" })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Provedor do modelo"), {
+      target: { value: "anthropic" },
+    });
+    expect(screen.getByRole("option", { name: "Claude Opus 4.1" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "GPT-4o" })).not.toBeInTheDocument();
+    expect(onListModels).not.toHaveBeenCalled();
+  });
+
+  it("keeps the saved model when coming back to its own provider", () => {
+    setup({
+      config: config({
+        provider: "openai_compatible",
+        model: "llama3.1",
+        base_url: "http://localhost:11434/v1/chat/completions",
+      }),
+    });
+    fireEvent.change(screen.getByLabelText("Provedor do modelo"), {
+      target: { value: "anthropic" },
+    });
+    expect(screen.getByLabelText("Modelo")).toHaveValue("");
+
+    // Voltar ao provedor da configuração devolve o modelo gravado, mesmo fora do catálogo.
+    fireEvent.change(screen.getByLabelText("Provedor do modelo"), {
+      target: { value: "openai_compatible" },
+    });
+    expect(screen.getByLabelText("Modelo")).toHaveValue("llama3.1");
+    expect(screen.getByRole("option", { name: "llama3.1" })).toBeInTheDocument();
   });
 
   it("shows provider, model, endpoint and that a key exists without exposing the key", () => {
@@ -80,7 +145,9 @@ describe("AIModelPanel", () => {
     });
     // O nome do provedor aparece no resumo e na opção do formulário.
     expect(screen.getAllByText("Compatível com OpenAI").length).toBeGreaterThan(0);
-    expect(screen.getByText("llama3.1")).toBeInTheDocument();
+    // O modelo gravado aparece no resumo e continua selecionado na lista, mesmo fora dela.
+    expect(screen.getAllByText("llama3.1").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Modelo")).toHaveValue("llama3.1");
     expect(screen.getByText("http://localhost:11434/v1/chat/completions")).toBeInTheDocument();
     expect(screen.getByText("Endpoint")).toBeInTheDocument();
     expect(screen.getByText("gravada no servidor")).toBeInTheDocument();
@@ -95,14 +162,14 @@ describe("AIModelPanel", () => {
 
   it("keeps the stored key out of the payload when the key field is left blank", async () => {
     const { onSave } = setup({ config: config() });
-    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "claude-opus-4-5" } });
+    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "claude-opus-4-1" } });
     fireEvent.click(screen.getByRole("button", { name: "Salvar configuração" }));
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     const input = submittedInput(onSave);
     expect(input).toEqual({
       provider: "anthropic",
-      model: "claude-opus-4-5",
+      model: "claude-opus-4-1",
       base_url: null,
       enabled: true,
     });
@@ -111,11 +178,11 @@ describe("AIModelPanel", () => {
   });
 
   it("requires the chat completions url for openai_compatible and dispenses it for anthropic", async () => {
-    const { onSave } = setup({ config: config({ base_url: null }) });
-    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "llama3.1" } });
+    const first = setup();
     fireEvent.change(screen.getByLabelText("Provedor do modelo"), {
       target: { value: "openai_compatible" },
     });
+    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "gpt-4o" } });
 
     // O campo diz que é a URL de /chat/completions, e sem ela o envio não acontece.
     const endpoint = screen.getByLabelText("Endpoint do provedor em /chat/completions");
@@ -123,23 +190,22 @@ describe("AIModelPanel", () => {
       "placeholder",
       "ex.: http://localhost:11434/v1/chat/completions",
     );
-    const submit = screen.getByRole("button", { name: "Salvar configuração" });
+    const submit = screen.getByRole("button", { name: "Cadastrar modelo" });
     expect(submit).toBeDisabled();
-    expect(screen.getByText(/exige a URL de \/chat\/completions antes de gravar/i)).toBeInTheDocument();
-    fireEvent.click(submit);
-    fireEvent.submit(
-      screen.getByRole("button", { name: "Salvar configuração" }).closest("form") as HTMLFormElement,
-    );
-    expect(onSave).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(/exige a URL de \/chat\/completions antes de gravar/i),
+    ).toBeInTheDocument();
+    fireEvent.submit(submit.closest("form") as HTMLFormElement);
+    expect(first.onSave).not.toHaveBeenCalled();
 
     fireEvent.change(endpoint, {
       target: { value: " http://localhost:11434/v1/chat/completions " },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Salvar configuração" }));
-    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(submittedInput(onSave)).toEqual({
+    fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
+    await waitFor(() => expect(first.onSave).toHaveBeenCalledTimes(1));
+    expect(submittedInput(first.onSave)).toEqual({
       provider: "openai_compatible",
-      model: "llama3.1",
+      model: "gpt-4o",
       base_url: "http://localhost:11434/v1/chat/completions",
       enabled: true,
     });
@@ -147,58 +213,52 @@ describe("AIModelPanel", () => {
     // O provedor oficial dispensa o endpoint.
     cleanup();
     const second = setup();
-    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "claude-sonnet-4-5" } });
+    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "claude-haiku-4-5" } });
     fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
     await waitFor(() => expect(second.onSave).toHaveBeenCalledTimes(1));
     expect(submittedInput(second.onSave).base_url).toBeNull();
   });
 
-  it("lists the provider models automatically when a configuration exists", async () => {
-    const { onListModels, onSave } = setup({ config: config() }, MODELS);
-
-    // Já existe configuração, então a lista é pedida sozinha, com o que está gravado.
-    await waitFor(() => expect(onListModels).toHaveBeenCalledTimes(1));
-    expect(onListModels).toHaveBeenCalledWith({ provider: "anthropic", base_url: null });
-
-    // O campo de modelo vira a lista do provedor, com o modelo gravado selecionado.
-    const field = await screen.findByLabelText("Modelo");
-    expect(field.tagName).toBe("SELECT");
-    expect(field).toHaveValue("claude-sonnet-4-5");
-    expect(screen.getByRole("option", { name: "Claude Sonnet 4.5" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "claude-haiku-4-5" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "outro (digitar)" })).toBeInTheDocument();
-
-    fireEvent.change(field, { target: { value: "claude-haiku-4-5" } });
-    fireEvent.click(screen.getByRole("button", { name: "Salvar configuração" }));
-
-    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(submittedInput(onSave).model).toBe("claude-haiku-4-5");
-  });
-
-  it("lists on demand with the typed key while there is no saved configuration", async () => {
-    const { onListModels } = setup({}, MODELS);
-    expect(screen.getByLabelText("Modelo").tagName).toBe("INPUT");
-    expect(onListModels).not.toHaveBeenCalled();
-
+  it("saves a model chosen from the list with a typed key without consulting the provider", async () => {
+    const { onSave, onListModels } = setup();
+    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "claude-sonnet-4-5" } });
     fireEvent.change(screen.getByLabelText("Chave da API"), {
       target: { value: "  chave-ficticia  " },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Carregar modelos" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
 
-    await waitFor(() => expect(onListModels).toHaveBeenCalledTimes(1));
-    // A chave digitada vale para a listagem e não é gravada por ela.
-    expect(onListModels).toHaveBeenCalledWith({
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(submittedInput(onSave)).toEqual({
       provider: "anthropic",
-      api_key: "chave-ficticia",
+      model: "claude-sonnet-4-5",
       base_url: null,
+      enabled: true,
+      api_key: "chave-ficticia",
     });
-    await waitFor(() => expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT"));
-    // Sem modelo escolhido a lista abre no convite, e não num valor inventado.
-    expect(screen.getByLabelText("Modelo")).toHaveValue("");
-    expect(screen.getByRole("option", { name: "Claude Sonnet 4.5" })).toBeInTheDocument();
+    // Nada de consulta ao provedor: a escolha veio da lista padrão.
+    expect(onListModels).not.toHaveBeenCalled();
+    // A chave sai do estado da tela depois do sucesso.
+    await waitFor(() => expect(screen.getByLabelText("Chave da API")).toHaveValue(""));
   });
 
-  it("sends the typed endpoint when the list is requested for a compatible provider", async () => {
+  it("saves a model from a freshly refreshed provider list", async () => {
+    const { onSave, onListModels } = setup({ config: config() }, MODELS);
+
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar do provedor" }));
+    await waitFor(() => expect(onListModels).toHaveBeenCalledTimes(1));
+    // Com configuração salva a consulta usa o que está gravado, sem chave digitada.
+    expect(onListModels).toHaveBeenCalledWith({ provider: "anthropic", base_url: null });
+
+    const field = await screen.findByLabelText("Modelo");
+    expect(field).toHaveValue("claude-sonnet-4-5");
+    fireEvent.change(field, { target: { value: "claude-opus-4-5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar configuração" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(submittedInput(onSave).model).toBe("claude-opus-4-5");
+  });
+
+  it("sends the typed key and endpoint when the provider is consulted", async () => {
     const { onListModels } = setup();
     fireEvent.change(screen.getByLabelText("Provedor do modelo"), {
       target: { value: "openai_compatible" },
@@ -206,116 +266,92 @@ describe("AIModelPanel", () => {
     fireEvent.change(screen.getByLabelText("Endpoint do provedor em /chat/completions"), {
       target: { value: "http://localhost:11434/v1/chat/completions" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Carregar modelos" }));
+    fireEvent.change(screen.getByLabelText("Chave da API"), {
+      target: { value: "  chave-ficticia  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar do provedor" }));
 
     await waitFor(() => expect(onListModels).toHaveBeenCalledTimes(1));
     expect(onListModels).toHaveBeenCalledWith({
       provider: "openai_compatible",
-      api_key: undefined,
+      api_key: "chave-ficticia",
       base_url: "http://localhost:11434/v1/chat/completions",
     });
   });
 
-  it("goes back to the free text field when 'outro (digitar)' is chosen", async () => {
-    const { onSave } = setup({ config: config() }, MODELS);
-    await waitFor(() => expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT"));
+  it("merges the provider list into the suggestions without duplicating", async () => {
+    const { onListModels } = setup({ config: config() }, MODELS);
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar do provedor" }));
+    await waitFor(() => expect(onListModels).toHaveBeenCalledTimes(1));
+    await screen.findByRole("button", { name: "Atualizar do provedor" });
 
-    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "__other__" } });
-
-    // O campo de texto volta com o modelo atual, e o que for digitado é o que se grava.
-    const typed = screen.getByLabelText("Modelo");
-    expect(typed.tagName).toBe("INPUT");
-    expect(typed).toHaveValue("claude-sonnet-4-5");
-    fireEvent.change(typed, { target: { value: "modelo-local:7b" } });
-    fireEvent.click(screen.getByRole("button", { name: "Salvar configuração" }));
-
-    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(submittedInput(onSave).model).toBe("modelo-local:7b");
-  });
-
-  it("keeps the typed model when the provider list fails", async () => {
-    const { onListModels, onSave } = setup();
-    onListModels.mockRejectedValue(
-      new ApiError(409, "the model provider has no stored key"),
+    // O que o provedor devolveu vem primeiro e marcado; as sugestões continuam disponíveis.
+    await waitFor(() =>
+      expect(optionGroups()).toEqual(["Do provedor", "Sugestões"]),
     );
-
-    fireEvent.click(screen.getByRole("button", { name: "Carregar modelos" }));
-
-    // A falha aparece e não fecha a porta: o nome continua digitável e gravável.
+    const values = optionValues();
+    // Sem duplicar: cada identificador aparece uma única vez, mesmo sendo sugestão e resposta.
+    expect(new Set(values).size).toBe(values.length);
+    expect(values.filter((value) => value === "claude-sonnet-4-5")).toHaveLength(1);
+    expect(values).toContain("claude-opus-4-5");
+    expect(values).toContain("claude-haiku-4-5");
+    // O nome legível do provedor prevalece sobre o rótulo da sugestão.
     expect(
-      await screen.findByText(/Não há chave para pedir a lista ao provedor/i),
+      screen.getByRole("option", { name: "Claude Sonnet 4.5 (provedor)" }),
     ).toBeInTheDocument();
-    const field = screen.getByLabelText("Modelo");
-    expect(field.tagName).toBe("INPUT");
-    fireEvent.change(field, { target: { value: "claude-sonnet-4-5" } });
-    fireEvent.change(screen.getByLabelText("Chave da API"), {
-      target: { value: "chave-ficticia" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
-
-    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(submittedInput(onSave).model).toBe("claude-sonnet-4-5");
+    expect(screen.getByText(/modelos vieram do provedor/i)).toBeInTheDocument();
   });
 
-  it("shows the reason the server gave when the list does not come", async () => {
-    const { onListModels } = setup();
+  it("keeps the default list and explains why when the provider is unreachable", async () => {
+    const { onListModels } = setup({ config: config() });
     onListModels.mockRejectedValue(
       new ApiError(
         502,
         "could not reach http://localhost:11434/v1/models: the connection was refused",
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Carregar modelos" }));
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar do provedor" }));
 
-    // O motivo do servidor chega à tela: não é um texto genérico que empurra a digitar.
+    // O motivo do servidor chega à tela junto com o aviso de que a lista padrão continua.
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Não foi possível obter a lista de modelos do provedor.");
     expect(alert).toHaveTextContent(
       "Motivo informado pelo servidor: could not reach http://localhost:11434/v1/models: the connection was refused",
     );
-  });
-
-  it("keeps the model list when listing fails with a saved configuration", async () => {
-    setup(
-      { config: config() },
-      [],
-      new ApiError(
-        422,
-        "the Anthropic provider refused the api key with HTTP 401: check the key saved for this provider before listing models",
-      ),
-    );
-
-    // A lista falhou, mas o campo continua sendo uma lista — o dono pediu escolha, não digitação.
-    await waitFor(() => expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT"));
-    const field = screen.getByLabelText("Modelo");
-    expect(field).toHaveValue("claude-sonnet-4-5");
-    expect(screen.getByRole("option", { name: "claude-sonnet-4-5" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "outro (digitar)" })).toBeInTheDocument();
-    // O motivo vem do backend e aparece acima do campo.
-    const alert = screen.getByRole("alert");
-    expect(alert).toHaveTextContent("O pedido da lista de modelos foi recusado.");
-    expect(alert).toHaveTextContent(/refused the api key with HTTP 401/);
-    expect(alert.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
-  it("stays a list when a reload fails after a good listing", async () => {
-    const { onListModels } = setup({ config: config() }, MODELS);
-    await waitFor(() => expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT"));
-
-    onListModels.mockRejectedValue(new ApiError(502, "provider exploded"));
-    fireEvent.click(screen.getByRole("button", { name: "Carregar modelos" }));
-
-    // A lista que já estava carregada não é substituída por caixa de texto.
-    await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/A lista do painel continua igual/i);
+    // Nada da lista padrão mudou: continua sendo a lista, com o modelo gravado selecionado.
     const field = screen.getByLabelText("Modelo");
     expect(field.tagName).toBe("SELECT");
     expect(field).toHaveValue("claude-sonnet-4-5");
-    expect(screen.getByRole("option", { name: "outro (digitar)" })).toBeInTheDocument();
+    expect(optionValues()).toEqual([
+      ...MODEL_SUGGESTIONS.anthropic.map((suggestion) => suggestion.id),
+      "__other__",
+    ]);
+    expect(screen.queryByRole("optgroup")).not.toBeInTheDocument();
+  });
+
+  it("still saves after a failed provider consultation", async () => {
+    const { onSave, onListModels } = setup({}, [], new ApiError(409, "no stored key"));
+    onListModels.mockRejectedValue(new ApiError(409, "the model provider has no stored key"));
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar do provedor" }));
+
+    expect(
+      await screen.findByText(/Não há chave para pedir a lista ao provedor/i),
+    ).toBeInTheDocument();
+    // A falha não fecha a porta: escolher na lista e salvar continua funcionando.
+    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "claude-opus-4-1" } });
+    fireEvent.change(screen.getByLabelText("Chave da API"), {
+      target: { value: "chave-ficticia" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cadastrar modelo" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(submittedInput(onSave).model).toBe("claude-opus-4-1");
   });
 
   it("only shows the text field after 'outro (digitar)' and saves what was typed", async () => {
-    const { onSave } = setup({ config: config() }, [], new ApiError(502, "provider exploded"));
-    await waitFor(() => expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT"));
+    const { onSave } = setup({ config: config() });
+    expect(screen.getByLabelText("Modelo").tagName).toBe("SELECT");
 
     fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "__other__" } });
 
@@ -330,13 +366,16 @@ describe("AIModelPanel", () => {
     expect(submittedInput(onSave).model).toBe("modelo-local:7b");
   });
 
-  it("keeps the free text field when the configuration model is not in the list", async () => {
-    setup({ config: config({ model: "claude-que-nao-esta-na-lista" }) }, MODELS);
+  it("keeps the saved model selectable when it is not in the catalog", () => {
+    setup({ config: config({ model: "claude-que-nao-esta-na-lista" }) });
 
-    await waitFor(() => expect(screen.getByText(/Carregar modelos/)).toBeInTheDocument());
-    // O provedor não devolveu o modelo gravado: apagar o que está configurado seria pior.
-    expect(screen.getByLabelText("Modelo").tagName).toBe("INPUT");
-    expect(screen.getByLabelText("Modelo")).toHaveValue("claude-que-nao-esta-na-lista");
+    // O campo é a lista, e o modelo gravado aparece nela: apagar seria pior que listar fora.
+    const field = screen.getByLabelText("Modelo");
+    expect(field.tagName).toBe("SELECT");
+    expect(field).toHaveValue("claude-que-nao-esta-na-lista");
+    expect(
+      screen.getByRole("option", { name: "claude-que-nao-esta-na-lista" }),
+    ).toBeInTheDocument();
   });
 
   it("sends a typed key and clears the field after saving", async () => {
@@ -358,6 +397,18 @@ describe("AIModelPanel", () => {
     await waitFor(() => expect(screen.getByLabelText("Chave da API")).toHaveValue(""));
   });
 
+  it("never puts the key in the text of the page", async () => {
+    const { onListModels } = setup();
+    fireEvent.change(screen.getByLabelText("Chave da API"), {
+      target: { value: "chave-ficticia-de-teste" },
+    });
+    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "claude-haiku-4-5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar do provedor" }));
+
+    await waitFor(() => expect(onListModels).toHaveBeenCalledTimes(1));
+    expect(document.body.textContent).not.toContain("chave-ficticia-de-teste");
+  });
+
   it("sends the enabled flag with the configuration", async () => {
     const { onSave } = setup({ config: config() });
     fireEvent.click(screen.getByRole("checkbox"));
@@ -372,14 +423,16 @@ describe("AIModelPanel", () => {
       error: "Não foi possível gravar a configuração.",
     });
     expect(screen.getByRole("alert")).toHaveTextContent("Não foi possível gravar a configuração.");
-    fireEvent.change(screen.getByLabelText("Modelo"), { target: { value: "modelo-que-nao-grava" } });
+    fireEvent.change(screen.getByLabelText("Modelo"), {
+      target: { value: "claude-opus-4-1-latest" },
+    });
     fireEvent.change(screen.getByLabelText("Chave da API"), { target: { value: "chave-ficticia" } });
     onSave.mockResolvedValue(false);
     fireEvent.click(screen.getByRole("button", { name: "Salvar configuração" }));
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    // O que foi digitado continua no formulário; a chave só sai quando a API confirma.
-    expect(screen.getByLabelText("Modelo")).toHaveValue("modelo-que-nao-grava");
+    // O que foi escolhido continua no formulário; a chave só sai quando a API confirma.
+    expect(screen.getByLabelText("Modelo")).toHaveValue("claude-opus-4-1-latest");
     expect(screen.getByLabelText("Chave da API")).toHaveValue("chave-ficticia");
     expect(screen.getByRole("button", { name: "Atualizar" })).toBeInTheDocument();
   });
@@ -423,7 +476,7 @@ describe("AIModelPanel", () => {
         onSave={vi.fn(() => Promise.resolve(true))}
       />,
     );
-    expect(screen.getByText("claude-sonnet-4-5")).toBeInTheDocument();
+    expect(screen.getAllByText("claude-sonnet-4-5").length).toBeGreaterThan(0);
 
     rerender(
       <AIModelPanel

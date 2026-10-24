@@ -1,12 +1,15 @@
+"""Private S3-compatible PDF storage; domain metadata remains in PostgreSQL."""
+
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
 from typing import BinaryIO
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
-from minio import Minio
-from minio.error import S3Error
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 STREAM_CHUNK_BYTES = 1024 * 1024
 
@@ -19,23 +22,62 @@ class ObjectNotFoundError(ObjectStorageError):
     pass
 
 
-class MinioObjectStorage:
+def validate_s3_endpoint(endpoint: str) -> str:
+    endpoint = endpoint.strip()
+    try:
+        parsed = urlsplit(endpoint)
+        parsed.port
+    except ValueError as exc:
+        raise ObjectStorageError("S3 endpoint is invalid") from exc
+    local_http = parsed.scheme == "http" and parsed.hostname in {
+        "localhost", "127.0.0.1", "::1",
+    }
+    if (
+        parsed.scheme not in {"https", "http"}
+        or not parsed.hostname
+        or (parsed.scheme == "http" and not local_http)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ObjectStorageError("S3 endpoint must use HTTPS or HTTP loopback")
+    return endpoint
+
+
+class S3ObjectStorage:
     def __init__(
         self,
         *,
-        endpoint: str,
-        access_key: str,
-        secret_key: str,
+        endpoint_url: str,
+        access_key_id: str,
+        secret_access_key: str,
         bucket: str,
-        secure: bool,
+        region: str = "us-east-1",
+        client: object | None = None,
     ) -> None:
-        self.bucket = bucket
-        self._client = Minio(
-            endpoint,
-            access_key=access_key,
-            secret_key=secret_key,
-            secure=secure,
+        self.bucket = bucket.strip()
+        self._client = client
+        self._configuration = (
+            endpoint_url.strip(), access_key_id.strip(), secret_access_key.strip(), region.strip()
         )
+
+    def _s3(self) -> object:
+        if self._client is None:
+            endpoint, access_key, secret_key, region = self._configuration
+            if not all((endpoint, access_key, secret_key, self.bucket, region)):
+                raise ObjectStorageError("S3 storage is not configured")
+            endpoint = validate_s3_endpoint(endpoint)
+            self._client = boto3.client(
+                "s3",
+                endpoint_url=endpoint,
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                region_name=region,
+                config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            )
+        return self._client
 
     async def put_pdf(
         self,
@@ -47,77 +89,54 @@ class MinioObjectStorage:
         original_filename: str,
     ) -> str:
         try:
+            content.seek(0)
             await asyncio.to_thread(
-                self._put_pdf,
-                object_name,
-                content,
-                length,
-                sha256,
-                original_filename,
+                self._s3().put_object,
+                Bucket=self.bucket,
+                Key=object_name,
+                Body=content,
+                ContentLength=length,
+                ContentType="application/pdf",
+                Metadata={
+                    "sha256": sha256,
+                    "original-filename": quote(original_filename, safe=""),
+                },
             )
-        except (OSError, S3Error, UnicodeError) as exc:
-            raise ObjectStorageError("MinIO is unavailable") from exc
+        except (BotoCoreError, ClientError, OSError, UnicodeError) as exc:
+            raise ObjectStorageError("S3 storage is unavailable") from exc
+        finally:
+            content.seek(0)
         return f"s3://{self.bucket}/{object_name}"
 
     async def open_pdf(self, *, storage_uri: str) -> AsyncIterator[bytes]:
         object_name = self.object_name(storage_uri)
         try:
-            response = await asyncio.to_thread(
-                self._client.get_object, self.bucket, object_name
+            result = await asyncio.to_thread(
+                self._s3().get_object, Bucket=self.bucket, Key=object_name
             )
-        except S3Error as exc:
-            if exc.code in {"NoSuchKey", "NoSuchBucket"}:
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code in {"NoSuchKey", "NoSuchBucket", "404", "NotFound"}:
                 raise ObjectNotFoundError("the stored PDF is missing") from exc
-            raise ObjectStorageError("MinIO is unavailable") from exc
-        except (OSError, UnicodeError) as exc:
-            raise ObjectStorageError("MinIO is unavailable") from exc
+            raise ObjectStorageError("S3 storage is unavailable") from exc
+        except (BotoCoreError, OSError, UnicodeError) as exc:
+            raise ObjectStorageError("S3 storage is unavailable") from exc
 
+        body = result["Body"]
         try:
             while True:
-                chunk = await asyncio.to_thread(response.read, STREAM_CHUNK_BYTES)
+                try:
+                    chunk = await asyncio.to_thread(body.read, STREAM_CHUNK_BYTES)
+                except (BotoCoreError, OSError) as exc:
+                    raise ObjectStorageError("S3 storage is unavailable") from exc
                 if not chunk:
                     break
                 yield chunk
         finally:
-            await asyncio.to_thread(_release, response)
+            await asyncio.to_thread(body.close)
 
     def object_name(self, storage_uri: str) -> str:
         prefix = f"s3://{self.bucket}/"
-        if not storage_uri.startswith(prefix) or len(storage_uri) == len(prefix):
+        if not self.bucket or not storage_uri.startswith(prefix) or len(storage_uri) == len(prefix):
             raise ObjectNotFoundError(f"unsupported storage uri: {storage_uri}")
         return storage_uri[len(prefix) :]
-
-    def _put_pdf(
-        self,
-        object_name: str,
-        content: BinaryIO,
-        length: int,
-        sha256: str,
-        original_filename: str,
-    ) -> None:
-        if not self._client.bucket_exists(self.bucket):
-            self._client.make_bucket(self.bucket)
-        content.seek(0)
-        try:
-            self._client.put_object(
-                self.bucket,
-                object_name,
-                content,
-                length,
-                content_type="application/pdf",
-                metadata={
-                    "sha256": sha256,
-                    "original-filename": quote(original_filename, safe=""),
-                },
-            )
-        finally:
-            content.seek(0)
-
-
-def _release(response: object) -> None:
-    close = getattr(response, "close", None)
-    if callable(close):
-        close()
-    release = getattr(response, "release_conn", None)
-    if callable(release):
-        release()

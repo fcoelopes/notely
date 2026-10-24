@@ -24,7 +24,7 @@ Duas restrições do repositório determinam o desenho:
 
 ## Consequências
 
-- Uma sessão pode ser retomada: a biblioteca lista documentos já ingeridos e o PDF é servido por `GET /api/documents/{id}/content` a partir do MinIO.
+- Uma sessão pode ser retomada: a biblioteca lista documentos já ingeridos e o PDF é servido por `GET /api/documents/{id}/content` a partir do serviço S3 configurado.
 - O tema nunca é sobrescrito por inferência: aceitar uma sugestão é um comando explícito e auditável, e a sugestão permanece registrada com provider e modelo.
 - A sugestão neste corte é síncrona em relação ao clique do usuário, porque ainda não existe runtime de workers no repositório. Quando os consumidores de outbox existirem, a geração pode migrar para um worker lendo `ai_suggestion.requested` sem mudar o contrato de aceite nem o schema.
 - O tema é texto livre; agrupamento semântico por embeddings (`document_contents` + pgvector, Fase 5) continua sendo o caminho para recuperação por similaridade e não foi antecipado aqui.

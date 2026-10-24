@@ -1,6 +1,6 @@
 # Rollback de migrations
 
-Este procedimento cobre o PostgreSQL local iniciado pelo Docker Compose. O banco guarda dados autorais, anotações, sessões, outbox e progresso; TimescaleDB guarda a trilha temporal. Os PDFs permanecem no MinIO, fora do `pg_dump`. Uma recuperação completa de ambiente também precisa preservar esses objetos.
+Este procedimento cobre o PostgreSQL local iniciado pelo Docker Compose. O banco guarda dados autorais, anotações, sessões, outbox e progresso; TimescaleDB guarda a trilha temporal. Os PDFs permanecem no serviço S3 externo, fora do `pg_dump`. Uma recuperação completa também precisa preservar esses objetos e as configurações do bucket. O volume MinIO anterior à migração para S3 externo deve ser mantido até o novo armazenamento estar incluído na rotina de backup.
 
 ## Regra de decisão
 
@@ -46,3 +46,23 @@ O script recusa um nome já existente, usa restauração transacional e executa 
 O backup foi feito antes do `down`; recuperar essa cópia restaura o estado daquele momento. Escritas posteriores precisam ser reconciliadas separadamente. Para produção, use o mesmo princípio com backups externos, retenção e recuperação pontual testada; estes scripts se limitam ao PostgreSQL Docker local.
 
 Referências: [Alembic](https://alembic.sqlalchemy.org/en/latest/api/commands.html), [pg_restore](https://www.postgresql.org/docs/current/app-pgrestore.html), [restauração TimescaleDB](https://docs.tigerdata.com/api/latest/administration/).
+
+## Rollback da troca de armazenamento
+
+A migração do MinIO para o SeaweedFS troca `documents.storage_uri` de
+`s3://notely-documents/...` para `s3://notely/...` em uma transação, sem alterar
+anotações. O volume do MinIO fica preservado. Para voltar, pare API e workers,
+suba PostgreSQL e MinIO legado e copie de volta também os PDFs criados depois da
+migração:
+
+```bash
+docker compose --profile legacy-migration up -d --wait postgres minio
+backend/.venv/bin/python scripts/migrate_minio_to_s3.py --to-legacy --dry-run
+backend/.venv/bin/python scripts/migrate_minio_to_s3.py --to-legacy
+backend/.venv/bin/python scripts/migrate_minio_to_s3.py --to-legacy --activate
+```
+
+A ativação reversa verifica cada hash antes de trocar todos os URIs de volta em uma
+transação. Depois configure `NOTELY_S3_ENDPOINT_URL=http://127.0.0.1:19001`, o bucket
+`notely-documents` e as credenciais do MinIO legado. Nunca remova o volume legado como
+parte do rollback. O backup do banco sozinho não inclui os PDFs.

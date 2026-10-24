@@ -1,6 +1,6 @@
 # Notely API
 
-O backend persiste domínio e outbox no PostgreSQL. PDFs enviados ao endpoint de upload são validados, examinados pelo ClamAV e somente então armazenados no MinIO.
+O backend persiste domínio e outbox no PostgreSQL. PDFs enviados ao endpoint de upload são validados, examinados pelo ClamAV e somente então armazenados em um serviço S3 externo.
 
 ## Executar localmente
 
@@ -12,7 +12,7 @@ Na raiz do repositório:
 ./scripts/dev.sh
 ```
 
-O comando sobe PostgreSQL, MinIO e ClamAV, sincroniza as dependências, aplica as revisões pendentes com Alembic e inicia API, Reader e os cinco workers (TimescaleDB, corpus, curadoria, grafo e conceitos). Use `Ctrl+C` para encerrar os processos da aplicação; os contêineres continuam ativos. Se a API ou o Reader já ocupam as portas locais, encerre a instância anterior antes de iniciar outra.
+O comando sobe PostgreSQL e ClamAV, sincroniza as dependências, aplica as revisões pendentes com Alembic e inicia API, Reader e os cinco workers (TimescaleDB, corpus, curadoria, grafo e conceitos). Use `Ctrl+C` para encerrar os processos da aplicação; os contêineres continuam ativos. Se a API ou o Reader já ocupam as portas locais, encerre a instância anterior antes de iniciar outra.
 
 Para aplicar migrations sem iniciar outra instância da aplicação:
 
@@ -38,8 +38,6 @@ Edite `upgrade()` e `downgrade()` da revisão gerada antes de aplicá-la e regis
 
 Sem a migration `0006`, a API falha ao salvar destaques e dúvidas porque falta `annotations.study_session_id`. Os workers de corpus e curadoria são iniciados junto com a aplicação; sem eles, dúvidas salvas ficam pendentes. O worker de corpus também enfileira PDFs antigos sem índice ao iniciar.
 
-O primeiro build do MinIO compila a release fixada em [`infra/minio/Dockerfile`](../infra/minio/Dockerfile) e pode demorar. A console local fica em `http://localhost:9001`.
-
 Configurações e credenciais de desenvolvimento estão em [`.env.example`](../.env.example), na raiz do repositório. Copie com `cp .env.example .env` e não reutilize esses valores em produção.
 
 Duas variáveis são obrigatórias para cifrar segredos em repouso: `NOTELY_AUTH_SECRET_KEY`, que protege o segredo do segundo fator, e `NOTELY_AI_SECRET_KEY`, que protege a chave de modelo do usuário. Sem elas a aplicação sobe e funciona normalmente, mas ativar o segundo fator e salvar a chave de modelo respondem `503` (`AuthConfigurationError` e `AssistantConfigurationError`) em vez de gravar o segredo em claro. Cada uma precisa de uma chave Fernet distinta, base64 urlsafe de 32 bytes. Gere cada uma uma vez e guarde o valor no `.env`:
@@ -48,7 +46,51 @@ Duas variáveis são obrigatórias para cifrar segredos em repouso: `NOTELY_AUTH
 backend/.venv/bin/python -c "from notely.core.security import SecretCipher; print(SecretCipher.generate_key())"
 ```
 
-A API lê o `.env` do diretório em que é iniciada, e o `./scripts/dev.sh` inicia a partir da raiz: um `.env` dentro de `backend/` seria ignorado ao usar o script. Como os workers leem o ambiente do processo e não o `.env`, o script exporta essas duas linhas do arquivo (sem imprimir os valores e sem sobrescrever o que já estiver no ambiente), e é isso que permite à extração de conceitos decifrar a chave do usuário no ambiente local. Trocar uma dessas chaves torna ilegíveis os segredos já gravados com ela, e o segundo fator ou a chave de modelo precisam ser cadastrados de novo.
+A API lê o `.env` do diretório em que é iniciada, e o `./scripts/dev.sh` inicia a partir da raiz: um `.env` dentro de `backend/` seria ignorado ao usar o script. Como os workers leem o ambiente do processo e não o `.env`, o script exporta as chaves de cifra e as variáveis S3 do arquivo sem imprimir os valores nem sobrescrever o ambiente. Trocar uma dessas chaves torna ilegíveis os segredos já gravados com ela, e o segundo fator ou a chave de modelo precisam ser cadastrados de novo.
+
+## Armazenamento S3 externo
+
+O Notely usa o SeaweedFS compartilhado em `http://127.0.0.1:9000` e não inicia um
+servidor de objetos no Compose padrão. O bucket é `notely`, com identidade exclusiva
+registrada no serviço compartilhado. Configure no `.env` da raiz:
+
+```text
+NOTELY_S3_ENDPOINT_URL=http://127.0.0.1:9000
+NOTELY_S3_ACCESS_KEY_ID=<chave-do-notely>
+NOTELY_S3_SECRET_ACCESS_KEY=<segredo-do-notely>
+NOTELY_S3_BUCKET=notely
+NOTELY_S3_REGION=us-east-1
+```
+
+As credenciais locais já foram gravadas no `.env` ignorado pelo Git. Outros ambientes
+precisam fornecer suas próprias credenciais. HTTP só é aceito em loopback; endpoints
+remotos exigem HTTPS. Sem endpoint e credenciais, `./scripts/dev.sh` recusa iniciar.
+
+### Migrar os PDFs do MinIO antigo
+
+Pare API e workers. Preserve o volume `notely-minio-data`. O MinIO legado usa a porta
+`19001` para coexistir com o SeaweedFS em `9000`. O migrador lê as referências do
+PostgreSQL e copia objetos de `notely-documents` para `notely`, mantendo as chaves.
+Antes de alterar qualquer URI, copie e releia todos os PDFs e confira o SHA-256:
+
+```bash
+docker compose --profile legacy-migration up -d --wait postgres minio
+backend/.venv/bin/python scripts/migrate_minio_to_s3.py --dry-run
+backend/.venv/bin/python scripts/migrate_minio_to_s3.py
+backend/.venv/bin/python scripts/migrate_minio_to_s3.py --dry-run
+backend/.venv/bin/python scripts/migrate_minio_to_s3.py --activate
+```
+
+`--dry-run` verifica a origem e indica objetos ausentes no destino; após a cópia,
+todos devem aparecer como `already_verified`. `--activate` relê cada objeto do destino,
+compara seu hash ao PostgreSQL e troca todos os URIs antigos para `s3://notely/...` em
+uma única transação. O comando pode ser repetido; não apaga objetos nem altera anotações.
+A cópia preserva os metadados do objeto. Depois valide download pelo Reader e o worker
+de corpus. Só então pare o legado com `docker compose stop minio`. Não use `down -v`.
+
+Para voltar ao MinIO, veja [docs/rollback.md](../docs/rollback.md). O migrador também
+aceita `--to-legacy` e `--to-legacy --activate`, realizando a cópia e a troca de URIs
+no sentido inverso após verificação.
 
 ## Fluxo de upload
 
@@ -56,7 +98,7 @@ A API lê o `.env` do diretório em que é iniciada, e o `./scripts/dev.sh` inic
 multipart PDF
   → validação de tipo/tamanho + SHA-256
   → ClamAV INSTREAM
-  → MinIO
+  → serviço S3 externo
   → PostgreSQL + outbox
 ```
 

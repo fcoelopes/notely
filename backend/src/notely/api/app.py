@@ -129,7 +129,7 @@ from notely.db.identity import SqlAlchemyIdentityStore
 from notely.db.uow import SqlAlchemyUnitOfWork
 from notely.providers.malware import ClamAVScanner, MalwareDetectedError, MalwareScanError
 from notely.providers.storage import (
-    MinioObjectStorage,
+    S3ObjectStorage,
     ObjectNotFoundError,
     ObjectStorageError,
 )
@@ -148,11 +148,11 @@ class Settings(BaseSettings):
     clamav_host: str = "localhost"
     clamav_port: int = 3310
     clamav_timeout_seconds: float = 30
-    minio_endpoint: str = "localhost:9000"
-    minio_access_key: str = "notely"
-    minio_secret_key: str = "notely-development-only"
-    minio_bucket: str = "notely-documents"
-    minio_secure: bool = False
+    s3_endpoint_url: str = ""
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    s3_bucket: str = "notely"
+    s3_region: str = "us-east-1"
     max_upload_bytes: int = 100 * 1024 * 1024
     topic_provider: str = "heuristic"
     topic_endpoint: str = ""
@@ -209,7 +209,7 @@ def get_ingestion(
     return request.app.state.ingestion_factory(user.id)
 
 
-def get_storage(request: Request) -> MinioObjectStorage:
+def get_storage(request: Request) -> S3ObjectStorage:
     return request.app.state.storage_factory()
 
 
@@ -364,7 +364,7 @@ def create_app(
     service_factory: Callable[[UUID], NotelyService] | None = None,
     ingestion_factory: Callable[[UUID], DocumentIngestionService] | None = None,
     topic_provider_factory: Callable[[], TopicSuggestionProvider] | None = None,
-    storage_factory: Callable[[], MinioObjectStorage] | None = None,
+    storage_factory: Callable[[], S3ObjectStorage] | None = None,
     auth_service: AuthService | None = None,
     assistant_factory: Callable[[UUID], StudyAssistant] | None = None,
 ) -> FastAPI:
@@ -397,12 +397,12 @@ def create_app(
         )
 
     if storage_factory is None:
-        storage_factory = lambda: MinioObjectStorage(
-            endpoint=settings.minio_endpoint,
-            access_key=settings.minio_access_key,
-            secret_key=settings.minio_secret_key,
-            bucket=settings.minio_bucket,
-            secure=settings.minio_secure,
+        storage_factory = lambda: S3ObjectStorage(
+            endpoint_url=settings.s3_endpoint_url,
+            access_key_id=settings.s3_access_key_id,
+            secret_access_key=settings.s3_secret_access_key,
+            bucket=settings.s3_bucket,
+            region=settings.s3_region,
         )
 
     if ingestion_factory is None:
@@ -672,7 +672,7 @@ def create_app(
     async def download_document(
         document_id: UUID,
         service: NotelyService = Depends(get_service),
-        storage: MinioObjectStorage = Depends(get_storage),
+        storage: S3ObjectStorage = Depends(get_storage),
     ) -> StreamingResponse:
         try:
             document = await service.get_document(document_id)

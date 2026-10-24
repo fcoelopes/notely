@@ -26,14 +26,14 @@ from notely.db.models import (
 )
 from notely.db.outbox import CONSUMER_CORPUS, DEFAULT_BATCH_SIZE, SqlAlchemyOutboxStore
 from notely.providers.pdf_text import EXTRACTOR_VERSION, PdfTextExtractionError, extract_page_text
-from notely.providers.storage import MinioObjectStorage, ObjectStorageError
+from notely.providers.storage import S3ObjectStorage, ObjectStorageError
 
 logger = logging.getLogger("notely.workers.corpus")
 EVENT_TYPES = frozenset({"document.created", "document.corpus.rebuild"})
 MAX_PDF_BYTES = 100 * 1024 * 1024
 
 
-async def read_and_extract(storage: MinioObjectStorage, row: DocumentRow) -> list[str]:
+async def read_and_extract(storage: S3ObjectStorage, row: DocumentRow) -> list[str]:
     digest = hashlib.sha256()
     total = 0
     with SpooledTemporaryFile(max_size=8 * 1024 * 1024) as content:
@@ -166,7 +166,7 @@ async def run_batch(
     *,
     store: SqlAlchemyOutboxStore,
     sessions: async_sessionmaker[AsyncSession],
-    storage: MinioObjectStorage,
+    storage: S3ObjectStorage,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> dict[str, int]:
     stats = {"claimed": 0, "indexed": 0, "failed": 0}
@@ -234,12 +234,12 @@ def main() -> None:
     async def run() -> None:
         engine = create_async_engine(args.database_url, pool_pre_ping=True)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
-        storage = MinioObjectStorage(
-            endpoint=os.environ.get("NOTELY_MINIO_ENDPOINT", "localhost:9000"),
-            access_key=os.environ.get("NOTELY_MINIO_ACCESS_KEY", "notely"),
-            secret_key=os.environ.get("NOTELY_MINIO_SECRET_KEY", "notely-development-only"),
-            bucket=os.environ.get("NOTELY_MINIO_BUCKET", "notely-documents"),
-            secure=os.environ.get("NOTELY_MINIO_SECURE", "false").lower() == "true",
+        storage = S3ObjectStorage(
+            endpoint_url=os.environ.get("NOTELY_S3_ENDPOINT_URL", ""),
+            access_key_id=os.environ.get("NOTELY_S3_ACCESS_KEY_ID", ""),
+            secret_access_key=os.environ.get("NOTELY_S3_SECRET_ACCESS_KEY", ""),
+            bucket=os.environ.get("NOTELY_S3_BUCKET", "notely"),
+            region=os.environ.get("NOTELY_S3_REGION", "us-east-1"),
         )
         store = SqlAlchemyOutboxStore(sessions)
         try:

@@ -67,7 +67,7 @@ export_env_secret() {
     export "$name=$value"
   fi
 }
-for env_secret in NOTELY_AUTH_SECRET_KEY NOTELY_AI_SECRET_KEY; do
+for env_secret in NOTELY_AUTH_SECRET_KEY NOTELY_AI_SECRET_KEY NOTELY_S3_ENDPOINT_URL NOTELY_S3_ACCESS_KEY_ID NOTELY_S3_SECRET_ACCESS_KEY NOTELY_S3_BUCKET NOTELY_S3_REGION; do
   export_env_secret "$env_secret"
 done
 unset env_secret
@@ -96,7 +96,14 @@ fi
 if [[ "$mode" == --migrate-only ]]; then
   docker compose up -d --wait postgres
 else
-  docker compose up -d --wait postgres minio clamav
+  for required_s3_setting in NOTELY_S3_ENDPOINT_URL NOTELY_S3_ACCESS_KEY_ID NOTELY_S3_SECRET_ACCESS_KEY; do
+    if [[ -z "${!required_s3_setting:-}" ]]; then
+      printf 'Armazenamento S3 externo não configurado: defina %s no .env.\n' "$required_s3_setting" >&2
+      exit 1
+    fi
+  done
+  unset required_s3_setting
+  docker compose up -d --wait postgres clamav
 fi
 uv sync --project backend --dev --frozen
 backend/.venv/bin/python scripts/migrate.py --database "$database"
